@@ -1,0 +1,173 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  AGENT
+  ADMIN
+}
+
+enum InquiryStatus {
+  OPEN
+  IN_PROGRESS
+  PENDING_CUSTOMER
+  RESOLVED
+  CLOSED
+}
+
+enum Priority {
+  LOW
+  MEDIUM
+  HIGH
+  URGENT
+}
+
+enum InquiryChannel {
+  WEB_PORTAL
+  EMAIL
+  CHAT
+  PHONE
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  passwordHash String?
+  name         String
+  role         Role      @default(AGENT)
+  avatarUrl    String?
+  department   String?
+  isActive     Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  recordedInquiries Inquiry[]            @relation("RecordedInquiries")
+  assignedInquiries Inquiry[]            @relation("AssignedInquiries")
+  messages          Message[]
+  activityLogs      InquiryActivityLog[]
+
+  @@map("users")
+}
+
+model Category {
+  id          String    @id @default(cuid())
+  name        String    @unique
+  description String?
+  color       String?
+  isActive    Boolean   @default(true)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+
+  inquiries Inquiry[]
+
+  @@map("categories")
+}
+
+model Inquiry {
+  id           String         @id @default(cuid())
+  ticketNumber String         @unique
+  subject      String
+  description  String
+  status       InquiryStatus  @default(OPEN)
+  priority     Priority       @default(MEDIUM)
+  channel      InquiryChannel @default(PHONE)
+
+  // Customer contact details (recorded on inquiry intake by staff)
+  customerName    String
+  customerEmail   String
+  customerPhone   String?
+  customerCompany String?
+
+  // Staff members who recorded and are handling the inquiry
+  createdById  String?
+  createdBy    User?          @relation("RecordedInquiries", fields: [createdById], references: [id], onDelete: SetNull)
+
+  assignedToId String?
+  assignedTo   User?          @relation("AssignedInquiries", fields: [assignedToId], references: [id], onDelete: SetNull)
+
+  categoryId   String?
+  category     Category?      @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+
+  resolvedAt   DateTime?
+  closedAt     DateTime?
+  createdAt    DateTime       @default(now())
+  updatedAt    DateTime       @updatedAt
+
+  messages     Message[]
+  activityLogs InquiryActivityLog[]
+  feedback     Feedback?
+
+  @@index([status])
+  @@index([priority])
+  @@index([createdById])
+  @@index([assignedToId])
+  @@index([categoryId])
+  @@index([customerEmail])
+  @@index([createdAt])
+  @@map("inquiries")
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  inquiryId      String
+  inquiry        Inquiry      @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  senderId       String?
+  sender         User?        @relation(fields: [senderId], references: [id], onDelete: SetNull)
+  senderName     String
+  body           String
+  isInternalNote Boolean      @default(false)
+  createdAt      DateTime     @default(now())
+  updatedAt      DateTime     @updatedAt
+
+  attachments    Attachment[]
+
+  @@index([inquiryId, createdAt])
+  @@index([senderId])
+  @@map("messages")
+}
+
+model Attachment {
+  id        String   @id @default(cuid())
+  messageId String
+  message   Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  fileName  String
+  fileUrl   String
+  fileSize  Int
+  mimeType  String
+  createdAt DateTime @default(now())
+
+  @@index([messageId])
+  @@map("attachments")
+}
+
+model InquiryActivityLog {
+  id        String   @id @default(cuid())
+  inquiryId String
+  inquiry   Inquiry  @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  actorId   String?
+  actor     User?    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  action    String
+  oldValue  String?
+  newValue  String?
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([inquiryId, createdAt])
+  @@map("inquiry_activity_logs")
+}
+
+model Feedback {
+  id        String   @id @default(cuid())
+  inquiryId String   @unique
+  inquiry   Inquiry  @relation(fields: [inquiryId], references: [id], onDelete: Cascade)
+  rating    Int
+  comment   String?
+  createdAt DateTime @default(now())
+
+  @@map("feedback")
+}
