@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect, useMemo, useCallback } from "react";
 import {
   Inquiry,
   InquiryStatus,
@@ -12,12 +12,15 @@ import {
   INITIAL_INQUIRIES,
   STAFF_USERS,
 } from "./mockData";
-import { Header } from "./components/Header";
+import { Sidebar } from "./components/Sidebar";
 import { StatCard } from "./components/StatCard";
 import { InquiryCard } from "./components/InquiryCard";
 import { InquiryDetailModal } from "./components/InquiryDetailModal";
 import { NewInquiryModal } from "./components/NewInquiryModal";
+import { StaffManagementModal } from "./components/StaffManagementModal";
+import { LoginPage } from "./components/LoginPage";
 import { useToast, ToastContainer } from "./components/Toast";
+import { AuthProvider, useAuth } from "./context/AuthContext";
 import {
   canTransitionStatus,
   getAllowedTransitions,
@@ -29,6 +32,7 @@ import {
   updateInquiryPriorityApi,
   assignInquiryApi,
   addInquiryMessageApi,
+  fetchStaffApi,
   ApiMutationResult,
 } from "./api";
 import {
@@ -43,14 +47,24 @@ import {
   PlusCircle,
   RefreshCw,
   Sparkles,
+  Shield,
+  ShieldAlert,
 } from "lucide-react";
 
 const STORAGE_KEY = "pulsedesk_inquiries_v1";
-const USER_KEY = "pulsedesk_current_user_v1";
 
-export default function Home() {
+function DashboardApp() {
+  const {
+    user: currentUser,
+    isAuthenticated,
+    isLoading: isAuthLoading,
+    logout,
+    hasPermission,
+    isAdmin,
+  } = useAuth();
+
   const [inquiries, setInquiries] = useState<Inquiry[]>(INITIAL_INQUIRIES);
-  const [currentUser, setCurrentUser] = useState<User>(STAFF_USERS[0]);
+  const [staffList, setStaffList] = useState<User[]>(STAFF_USERS);
   const [isLoading, setIsLoading] = useState(true);
 
   // Toast feedback notifications
@@ -75,39 +89,56 @@ export default function Home() {
   // Modal States
   const [selectedInquiry, setSelectedInquiry] = useState<Inquiry | null>(null);
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
+  const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
 
-  // Sync with localStorage & fetch from live API on client mount
+  // Granular Access Permissions
+  const canCreateInquiry = hasPermission("inquiries:create");
+  const canUpdateStatus = hasPermission("inquiries:update_status");
+  const canAssign = hasPermission("inquiries:assign");
+  const canUpdatePriority = hasPermission("inquiries:update_priority");
+  const canAddNotes = hasPermission("inquiries:add_notes");
+  const canClose = hasPermission("inquiries:close");
+  const canViewAll = hasPermission("inquiries:view_all");
+
+  // Fetch inquiries & staff members from backend API
+  const refreshInquiries = useCallback(async () => {
+    try {
+      const apiData = await fetchInquiriesFromApi();
+      if (apiData && apiData.length > 0) {
+        setInquiries(apiData);
+      }
+    } catch {
+      // Fall back gracefully to local cache
+    }
+  }, []);
+
+  const refreshStaff = useCallback(async () => {
+    try {
+      const data = await fetchStaffApi();
+      if (data && data.length > 0) {
+        setStaffList(data);
+      }
+    } catch {
+      // Keep existing staff list
+    }
+  }, []);
+
   useEffect(() => {
+    if (!isAuthenticated) return;
+
     try {
       const savedInquiries = localStorage.getItem(STORAGE_KEY);
       if (savedInquiries) {
         setInquiries(JSON.parse(savedInquiries));
-      } else {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(INITIAL_INQUIRIES));
-      }
-
-      const savedUser = localStorage.getItem(USER_KEY);
-      if (savedUser) {
-        setCurrentUser(JSON.parse(savedUser));
       }
     } catch {
-      // fallback to initial
+      // Ignore parse error
     }
 
-    // Persistently load latest inquiries from PostgreSQL via Node.js API
-    fetchInquiriesFromApi()
-      .then((apiData) => {
-        if (apiData && apiData.length > 0) {
-          setInquiries(apiData);
-        }
-      })
-      .catch(() => {
-        // Fall back gracefully to local storage
-      })
-      .finally(() => {
-        setIsLoading(false);
-      });
-  }, []);
+    Promise.all([refreshInquiries(), refreshStaff()]).finally(() => {
+      setIsLoading(false);
+    });
+  }, [isAuthenticated, refreshInquiries, refreshStaff]);
 
   // Save to localStorage whenever inquiries change
   const saveInquiries = (updated: Inquiry[]) => {
@@ -119,50 +150,59 @@ export default function Home() {
     }
   };
 
-  const handleSelectUser = (user: User) => {
-    setCurrentUser(user);
-    try {
-      localStorage.setItem(USER_KEY, JSON.stringify(user));
-    } catch (e) {
-      console.error("User storage error:", e);
-    }
-    toastInfo("Active User Changed", `Switched active operator to ${user.name} (${user.role})`);
-  };
-
   const handleResetData = () => {
     if (confirm("Reset all inquiries to sample demonstration data?")) {
       saveInquiries(INITIAL_INQUIRIES);
       setSelectedInquiry(null);
-      toastInfo("Reset Complete", "Inquiries reset to baseline demonstration dataset.");
+      toastInfo(
+        "Sample Inquiries Restored",
+        "The inquiries list has been reset to the demonstration baseline."
+      );
     }
   };
 
-  // Quick 1-Click Handlers for Core Problem Solving
+  // Quick Handlers for Inquiry Operations
   const handleQuickAssign = async (inquiryId: string, user: User) => {
-    const targetInq = inquiries.find((i) => i.id === inquiryId);
-    if (targetInq?.status === "CLOSED") {
-      toastError("Action Prohibited", "Closed records are archived and cannot be reassigned.");
+    if (!canAssign) {
+      toastError(
+        "Action Not Allowed",
+        "You do not have permission to assign or claim tickets. Please contact an administrator."
+      );
       return;
     }
 
-    // Persist to PostgreSQL via Node.js API
-    const res = await assignInquiryApi(inquiryId, user.id, currentUser.email);
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      toastError(
+        "Ticket Already Closed",
+        `Ticket #${targetInq?.ticketNumber || inquiryId} is closed and cannot be reassigned.`
+      );
+      return;
+    }
+
+    // Persist to database via API
+    const res = await assignInquiryApi(inquiryId, user.id);
     if (res && res.success === false) {
-      toastError("Assignment Failed", res.message || "Failed to assign inquiry on server.");
+      toastError(
+        "Assignment Failed",
+        res.message || `Could not assign ticket #${targetInq?.ticketNumber || inquiryId} to ${user.name}. Please try again.`
+      );
       return;
     }
 
     const now = new Date().toISOString();
-    const isSelf = user.id === currentUser.id;
+    const isSelf = currentUser ? user.id === currentUser.id : false;
+    const actorName = currentUser?.name || "Staff";
+
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
         const newLog = {
           id: `log-${Date.now()}`,
           inquiryId,
-          actor: currentUser,
+          actor: currentUser!,
           action: "ASSIGNED" as const,
           description: isSelf
-            ? `${currentUser.name} claimed this ticket`
+            ? `${actorName} claimed this ticket`
             : `Assigned to ${user.name}`,
           timestamp: now,
         };
@@ -173,9 +213,9 @@ export default function Home() {
           updatedAt: now,
           lastActivity: {
             text: isSelf
-              ? `Claimed by ${currentUser.name}`
+              ? `Claimed by ${actorName}`
               : `Assigned to ${user.name}`,
-            actorName: currentUser.name,
+            actorName,
             timestamp: now,
           },
           activityLogs: [newLog, ...inq.activityLogs],
@@ -189,10 +229,10 @@ export default function Home() {
     });
     saveInquiries(updated);
     toastSuccess(
-      "Inquiry Assigned",
+      isSelf ? "Ticket Claimed" : "Ticket Assigned",
       isSelf
-        ? `Ticket #${targetInq?.ticketNumber || inquiryId} assigned to yourself.`
-        : `Ticket #${targetInq?.ticketNumber || inquiryId} assigned to ${user.name}.`
+        ? `You have claimed ownership of ticket #${targetInq?.ticketNumber || inquiryId}.`
+        : `Ticket #${targetInq?.ticketNumber || inquiryId} assigned to ${user.name} (${user.department || "Staff"}).`
     );
   };
 
@@ -200,42 +240,58 @@ export default function Home() {
     inquiryId: string,
     newStatus: InquiryStatus
   ): Promise<ApiMutationResult> => {
+    if (!canUpdateStatus) {
+      const err = "You do not have permission to update inquiry status.";
+      toastError("Action Not Allowed", err);
+      return { success: false, message: err };
+    }
+
+    if ((newStatus === "RESOLVED" || newStatus === "CLOSED") && !canClose) {
+      const err = "You do not have permission to resolve or close inquiries.";
+      toastError("Action Not Allowed", err);
+      return { success: false, message: err };
+    }
+
     const targetInq = inquiries.find((i) => i.id === inquiryId);
     if (!targetInq) {
-      const err = "Inquiry record not found.";
-      toastError("Error", err);
+      const err = `Inquiry #${inquiryId} could not be found.`;
+      toastError("Inquiry Not Found", err);
       return { success: false, message: err };
     }
 
-    // Enforce workflow rules: Closed records are immutable
+    // Closed records cannot be modified
     if (targetInq.status === "CLOSED") {
-      const err = "Inquiry is CLOSED. Closed records are final and cannot be modified or reopened.";
-      toastError("Workflow Violation", err);
+      const err = `Ticket #${targetInq.ticketNumber} is closed. Completed tickets cannot be modified.`;
+      toastError("Ticket Already Closed", err);
       return { success: false, message: err };
     }
 
-    // Enforce workflow rules: Valid transitions only
+    // Valid transitions only
     if (!canTransitionStatus(targetInq.status, newStatus)) {
       const allowed = getAllowedTransitions(targetInq.status).join(", ") || "None";
-      const err = `Cannot transition status from '${targetInq.status}' to '${newStatus}'. Allowed transitions: ${allowed}`;
-      toastError("Invalid Status Transition", err);
+      const err = `Cannot change ticket #${targetInq.ticketNumber} directly from ${targetInq.status} to ${newStatus}. Permitted next steps: ${allowed}.`;
+      toastError("Status Change Not Allowed", err);
       return { success: false, message: err };
     }
 
-    // Persist to PostgreSQL via Node.js API
-    const res = await updateInquiryStatusApi(inquiryId, newStatus, currentUser.email);
+    // Persist to database via API
+    const res = await updateInquiryStatusApi(inquiryId, newStatus);
     if (res && res.success === false) {
-      toastError("Status Update Failed", res.message || "Failed to update inquiry status on server.");
+      toastError(
+        "Status Update Failed",
+        res.message || `Could not update ticket #${targetInq.ticketNumber} to ${newStatus}. Please try again.`
+      );
       return res;
     }
 
     const now = new Date().toISOString();
+    const actorName = currentUser?.name || "Staff";
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
         const newLog = {
           id: `log-${Date.now()}`,
           inquiryId,
-          actor: currentUser,
+          actor: currentUser!,
           action: "STATUS_CHANGED" as const,
           description: `Status changed from ${inq.status} to ${newStatus}`,
           timestamp: now,
@@ -246,7 +302,7 @@ export default function Home() {
           updatedAt: now,
           lastActivity: {
             text: `Status changed to ${newStatus}`,
-            actorName: currentUser.name,
+            actorName,
             timestamp: now,
           },
           activityLogs: [newLog, ...inq.activityLogs],
@@ -260,8 +316,16 @@ export default function Home() {
     });
     saveInquiries(updated);
     toastSuccess(
-      "Status Updated",
-      `Ticket #${targetInq.ticketNumber} transitioned to ${newStatus}.`
+      newStatus === "RESOLVED"
+        ? "Ticket Resolved"
+        : newStatus === "CLOSED"
+        ? "Ticket Closed"
+        : "Status Updated",
+      newStatus === "RESOLVED"
+        ? `Ticket #${targetInq.ticketNumber} successfully marked as resolved.`
+        : newStatus === "CLOSED"
+        ? `Ticket #${targetInq.ticketNumber} closed and archived.`
+        : `Ticket #${targetInq.ticketNumber} status changed to ${newStatus}.`
     );
     return { success: true, message: `Status updated to ${newStatus}` };
   };
@@ -270,27 +334,37 @@ export default function Home() {
     inquiryId: string,
     newPriority: Priority
   ): Promise<ApiMutationResult> => {
-    const targetInq = inquiries.find((i) => i.id === inquiryId);
-    if (targetInq?.status === "CLOSED") {
-      const err = "Inquiry is CLOSED. Closed records cannot be modified.";
-      toastError("Workflow Violation", err);
+    if (!canUpdatePriority) {
+      const err = "You do not have permission to modify inquiry priority.";
+      toastError("Action Not Allowed", err);
       return { success: false, message: err };
     }
 
-    // Persist to PostgreSQL via Node.js API
-    const res = await updateInquiryPriorityApi(inquiryId, newPriority, currentUser.email);
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      const err = `Ticket #${targetInq?.ticketNumber || inquiryId} is closed. Priority cannot be changed on closed tickets.`;
+      toastError("Ticket Already Closed", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to database via API
+    const res = await updateInquiryPriorityApi(inquiryId, newPriority);
     if (res && res.success === false) {
-      toastError("Priority Update Failed", res.message || "Server rejected priority change.");
+      toastError(
+        "Priority Change Failed",
+        res.message || `Could not change priority for ticket #${targetInq?.ticketNumber || inquiryId}. Please try again.`
+      );
       return res;
     }
 
     const now = new Date().toISOString();
+    const actorName = currentUser?.name || "Staff";
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
         const newLog = {
           id: `log-${Date.now()}`,
           inquiryId,
-          actor: currentUser,
+          actor: currentUser!,
           action: "PRIORITY_CHANGED" as const,
           description: `Priority updated to ${newPriority}`,
           timestamp: now,
@@ -301,7 +375,7 @@ export default function Home() {
           updatedAt: now,
           lastActivity: {
             text: `Priority escalated to ${newPriority}`,
-            actorName: currentUser.name,
+            actorName,
             timestamp: now,
           },
           activityLogs: [newLog, ...inq.activityLogs],
@@ -315,8 +389,10 @@ export default function Home() {
     });
     saveInquiries(updated);
     toastSuccess(
-      "Priority Updated",
-      `Ticket #${targetInq?.ticketNumber || inquiryId} priority set to ${newPriority}.`
+      newPriority === "URGENT" ? "Urgent Priority Set" : "Priority Updated",
+      newPriority === "URGENT"
+        ? `Ticket #${targetInq?.ticketNumber || inquiryId} marked as URGENT priority.`
+        : `Ticket #${targetInq?.ticketNumber || inquiryId} priority set to ${newPriority}.`
     );
     return { success: true, message: `Priority set to ${newPriority}` };
   };
@@ -325,31 +401,44 @@ export default function Home() {
     inquiryId: string,
     assignedTo: User | null
   ): Promise<ApiMutationResult> => {
-    const targetInq = inquiries.find((i) => i.id === inquiryId);
-    if (targetInq?.status === "CLOSED") {
-      const err = "Inquiry is CLOSED. Closed records cannot be modified.";
-      toastError("Workflow Violation", err);
+    if (!canAssign) {
+      const err = "You do not have permission to assign or delegate tickets.";
+      toastError("Action Not Allowed", err);
       return { success: false, message: err };
     }
 
-    // Persist to PostgreSQL via Node.js API
-    const res = await assignInquiryApi(inquiryId, assignedTo?.id || null, currentUser.email);
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      const err = `Ticket #${targetInq?.ticketNumber || inquiryId} is closed and cannot be reassigned.`;
+      toastError("Ticket Already Closed", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to database via API
+    const res = await assignInquiryApi(inquiryId, assignedTo?.id || null);
     if (res && res.success === false) {
-      toastError("Assignment Failed", res.message || "Server rejected assignment.");
+      toastError(
+        "Assignment Failed",
+        res.message ||
+          (assignedTo
+            ? `Could not assign ticket #${targetInq?.ticketNumber || inquiryId} to ${assignedTo.name}. Please try again.`
+            : "Could not unassign ticket. Please try again.")
+      );
       return res;
     }
 
     const now = new Date().toISOString();
+    const actorName = currentUser?.name || "Staff";
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
         const newLog = {
           id: `log-${Date.now()}`,
           inquiryId,
-          actor: currentUser,
+          actor: currentUser!,
           action: "ASSIGNED" as const,
           description: assignedTo
             ? `Assigned to ${assignedTo.name}`
-            : `Unassigned ticket (returned to triage queue)`,
+            : `Unassigned ticket (returned to waiting queue)`,
           timestamp: now,
         };
         const updatedInq: Inquiry = {
@@ -359,8 +448,8 @@ export default function Home() {
           lastActivity: {
             text: assignedTo
               ? `Assigned to ${assignedTo.name}`
-              : "Returned to Unassigned queue",
-            actorName: currentUser.name,
+              : "Returned to waiting queue",
+            actorName,
             timestamp: now,
           },
           activityLogs: [newLog, ...inq.activityLogs],
@@ -374,10 +463,10 @@ export default function Home() {
     });
     saveInquiries(updated);
     toastSuccess(
-      "Assignment Updated",
+      assignedTo ? "Ticket Assigned" : "Ticket Returned to Queue",
       assignedTo
-        ? `Assigned to ${assignedTo.name}`
-        : "Inquiry unassigned and returned to queue."
+        ? `Ticket #${targetInq?.ticketNumber || inquiryId} assigned to ${assignedTo.name} (${assignedTo.department || "Staff"}).`
+        : `Ticket #${targetInq?.ticketNumber || inquiryId} unassigned and returned to the waiting queue.`
     );
     return { success: true };
   };
@@ -387,30 +476,38 @@ export default function Home() {
     body: string,
     isInternalNote: boolean
   ): Promise<ApiMutationResult> => {
-    const targetInq = inquiries.find((i) => i.id === inquiryId);
-    if (targetInq?.status === "CLOSED") {
-      const err = "Inquiry is CLOSED. Discussion is locked.";
-      toastError("Action Prohibited", err);
+    if (!canAddNotes) {
+      const err = "You do not have permission to post messages or internal notes.";
+      toastError("Action Not Allowed", err);
       return { success: false, message: err };
     }
 
-    // Persist to PostgreSQL via Node.js API
-    const res = await addInquiryMessageApi(
-      inquiryId,
-      body,
-      isInternalNote,
-      currentUser.email
-    );
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      const err = `Ticket #${targetInq?.ticketNumber || inquiryId} is closed. Adding replies or notes to closed tickets is disabled.`;
+      toastError("Ticket Already Closed", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to database via API
+    const res = await addInquiryMessageApi(inquiryId, body, isInternalNote);
     if (res && res.success === false) {
-      toastError("Message Dispatch Failed", res.message || "Failed to record message.");
+      toastError(
+        isInternalNote ? "Note Failed" : "Reply Failed",
+        res.message ||
+          (isInternalNote
+            ? `Could not save internal note on ticket #${targetInq?.ticketNumber || inquiryId}. Please try again.`
+            : `Could not send reply to customer for ticket #${targetInq?.ticketNumber || inquiryId}. Please try again.`)
+      );
       return res;
     }
 
     const now = new Date().toISOString();
+    const actorName = currentUser?.name || "Staff";
     const newMessage = {
       id: `msg-${Date.now()}`,
       inquiryId,
-      senderName: currentUser.name,
+      senderName: actorName,
       sender: currentUser,
       body,
       isInternalNote,
@@ -419,7 +516,7 @@ export default function Home() {
     const newLog = {
       id: `log-${Date.now()}`,
       inquiryId,
-      actor: currentUser,
+      actor: currentUser!,
       action: (isInternalNote ? "NOTE_ADDED" : "MESSAGE_SENT") as
         | "NOTE_ADDED"
         | "MESSAGE_SENT",
@@ -442,7 +539,7 @@ export default function Home() {
             text: isInternalNote
               ? `Internal note: "${body.slice(0, 35)}..."`
               : `Replied to customer`,
-            actorName: currentUser.name,
+            actorName,
             timestamp: now,
           },
           messages: [...inq.messages, newMessage],
@@ -457,10 +554,10 @@ export default function Home() {
     });
     saveInquiries(updated);
     toastSuccess(
-      isInternalNote ? "Staff Note Saved" : "Response Sent",
+      isInternalNote ? "Note Saved" : "Reply Sent",
       isInternalNote
-        ? "Internal note logged in ticket audit history."
-        : "Reply dispatched to customer."
+        ? `Internal note added to ticket #${targetInq?.ticketNumber || inquiryId}.`
+        : `Customer reply sent for ticket #${targetInq?.ticketNumber || inquiryId}.`
     );
     return { success: true };
   };
@@ -468,6 +565,12 @@ export default function Home() {
   const handleCreateInquiry = async (
     newInquiry: Inquiry
   ): Promise<ApiMutationResult<Inquiry>> => {
+    if (!canCreateInquiry) {
+      const msg = "You do not have permission to create new customer inquiries.";
+      toastError("Action Not Allowed", msg);
+      return { success: false, message: msg };
+    }
+
     // 5-minute duplicate submission check
     const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
     const localDuplicate = inquiries.find(
@@ -480,8 +583,8 @@ export default function Home() {
     );
 
     if (localDuplicate) {
-      const msg = `Duplicate Inquiry: An identical inquiry from '${newInquiry.customer.email}' with subject '${newInquiry.subject}' was submitted within the last 5 minutes.`;
-      toastWarning("Duplicate Submission Prevented", msg);
+      const msg = `An inquiry with subject '${newInquiry.subject}' from '${newInquiry.customer.email}' was already submitted within the last 5 minutes.`;
+      toastWarning("Duplicate Inquiry Prevented", msg);
       return {
         success: false,
         status: 409,
@@ -490,22 +593,19 @@ export default function Home() {
       };
     }
 
-    // Persist to PostgreSQL via Node.js API
-    const res = await createInquiryApi(
-      {
-        subject: newInquiry.subject,
-        description: newInquiry.description,
-        customerName: newInquiry.customer.name,
-        customerEmail: newInquiry.customer.email,
-        customerPhone: newInquiry.customer.phone,
-        customerCompany: newInquiry.customer.company,
-        priority: newInquiry.priority,
-        channel: newInquiry.channel,
-        categoryId: newInquiry.category?.id,
-        assignedToId: newInquiry.assignedTo?.id,
-      },
-      currentUser.email
-    );
+    // Persist to database via API
+    const res = await createInquiryApi({
+      subject: newInquiry.subject,
+      description: newInquiry.description,
+      customerName: newInquiry.customer.name,
+      customerEmail: newInquiry.customer.email,
+      customerPhone: newInquiry.customer.phone,
+      customerCompany: newInquiry.customer.company,
+      priority: newInquiry.priority,
+      channel: newInquiry.channel,
+      categoryId: newInquiry.category?.id,
+      assignedToId: newInquiry.assignedTo?.id,
+    });
 
     if (res && res.success === false) {
       if (
@@ -514,13 +614,15 @@ export default function Home() {
         res.error === "Conflict"
       ) {
         toastWarning(
-          "Duplicate Submission Detected",
-          res.message || "An inquiry with this subject was submitted within the last 5 minutes."
+          "Duplicate Inquiry Detected",
+          res.message ||
+            `An inquiry with subject '${newInquiry.subject}' was already received from ${newInquiry.customer.email} in the last 5 minutes.`
         );
       } else {
         toastError(
-          "Submission Failed",
-          res.message || "Failed to create inquiry. Please check the required fields."
+          "Inquiry Not Saved",
+          res.message ||
+            `Please check all required fields for ${newInquiry.customer.name} and try again.`
         );
       }
       return res;
@@ -531,26 +633,11 @@ export default function Home() {
     saveInquiries(updated);
     setSelectedInquiry(createdRecord);
     toastSuccess(
-      "Inquiry Created Successfully",
+      "Inquiry Created",
       `Ticket #${createdRecord.ticketNumber} opened for ${createdRecord.customer.name}.`
     );
     return { success: true, data: createdRecord };
   };
-
-  // Computed Metrics
-  const metrics = useMemo(() => {
-    const total = inquiries.length;
-    const unassigned = inquiries.filter((i) => !i.assignedTo).length;
-    const inProgress = inquiries.filter((i) => i.status === "IN_PROGRESS").length;
-    const resolved = inquiries.filter(
-      (i) => i.status === "RESOLVED" || i.status === "CLOSED"
-    ).length;
-    const urgent = inquiries.filter(
-      (i) => i.priority === "URGENT" && i.status !== "RESOLVED" && i.status !== "CLOSED"
-    ).length;
-
-    return { total, unassigned, inProgress, resolved, urgent };
-  }, [inquiries]);
 
   // Filtered List
   const filteredInquiries = useMemo(() => {
@@ -571,7 +658,7 @@ export default function Home() {
 
       // Tab filter
       if (activeTab === "UNASSIGNED" && inq.assignedTo) return false;
-      if (activeTab === "ASSIGNED_TO_ME" && inq.assignedTo?.id !== currentUser.id)
+      if (activeTab === "ASSIGNED_TO_ME" && inq.assignedTo?.id !== currentUser?.id)
         return false;
       if (activeTab === "IN_PROGRESS" && inq.status !== "IN_PROGRESS")
         return false;
@@ -603,8 +690,23 @@ export default function Home() {
     selectedPriority,
     selectedCategory,
     selectedChannel,
-    currentUser.id,
+    currentUser?.id,
   ]);
+
+  // Computed Metrics
+  const metrics = useMemo(() => {
+    const total = inquiries.length;
+    const unassigned = inquiries.filter((i) => !i.assignedTo).length;
+    const inProgress = inquiries.filter((i) => i.status === "IN_PROGRESS").length;
+    const resolved = inquiries.filter(
+      (i) => i.status === "RESOLVED" || i.status === "CLOSED"
+    ).length;
+    const urgent = inquiries.filter(
+      (i) => i.priority === "URGENT" && i.status !== "RESOLVED" && i.status !== "CLOSED"
+    ).length;
+
+    return { total, unassigned, inProgress, resolved, urgent };
+  }, [inquiries]);
 
   const hasActiveFilters =
     searchQuery !== "" ||
@@ -621,19 +723,53 @@ export default function Home() {
     setSelectedChannel("ALL");
   };
 
+  // 1. Mandatory Login Gate: While checking session
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center space-y-4">
+        <div className="w-12 h-12 rounded-2xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-xl shadow-blue-500/30 animate-pulse">
+          <RefreshCw className="w-6 h-6 animate-spin" />
+        </div>
+        <div className="text-white text-sm font-semibold tracking-wide">
+          Authenticating PulseDesk Session...
+        </div>
+      </div>
+    );
+  }
+
+  // 1. Mandatory Login Gate: When opening the website every user must first login using their credentials
+  if (!isAuthenticated || !currentUser) {
+    return <LoginPage />;
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col">
-      {/* Top Navigation */}
-      <Header
-        staffUsers={STAFF_USERS}
+    <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row">
+      {/* Left Navigation Sidebar */}
+      <Sidebar
         currentUser={currentUser}
-        onSelectUser={handleSelectUser}
+        canCreateInquiry={canCreateInquiry}
+        unassignedCount={metrics.unassigned}
+        totalCount={metrics.total}
+        activeFilterTab={activeTab}
+        onSelectTab={(tab) => setActiveTab(tab)}
         onOpenNewModal={() => setIsNewModalOpen(true)}
-        onResetData={handleResetData}
+        onOpenStaffModal={() => setIsStaffModalOpen(true)}
+        onLogout={logout}
       />
 
       {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+      <div className="flex-1 flex flex-col min-w-0">
+        <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+        {/* Scoped Access Notice if Staff has restricted access */}
+        {!canViewAll && !isAdmin && (
+          <div className="p-3.5 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 text-xs flex items-center gap-3">
+            <ShieldAlert className="w-4 h-4 text-amber-600 shrink-0" />
+            <span>
+              <strong>Assigned View:</strong> You are viewing inquiries assigned directly to you and unassigned tickets waiting for an owner.
+            </span>
+          </div>
+        )}
+
         {/* Hero Banner explaining the solution */}
         <div className="relative overflow-hidden rounded-2xl bg-gradient-to-r from-blue-700 via-indigo-700 to-slate-900 p-6 sm:p-8 text-white shadow-lg">
           <div className="relative z-10 max-w-3xl space-y-2">
@@ -644,9 +780,6 @@ export default function Home() {
             <h1 className="text-2xl sm:text-3xl font-extrabold tracking-tight">
               Customer Inquiry & Service Dispatch System
             </h1>
-            <p className="text-sm sm:text-base text-blue-100 leading-relaxed">
-              Eliminate lost requests from chat apps and spreadsheets. Easily view <strong>who is handling each request</strong>, <strong>whether it has been addressed</strong>, and <strong>what happened last</strong> in real-time.
-            </p>
           </div>
           {/* Subtle background glow */}
           <div className="absolute -right-20 -bottom-20 w-80 h-80 bg-blue-500/20 rounded-full blur-3xl pointer-events-none" />
@@ -666,7 +799,7 @@ export default function Home() {
           <StatCard
             label="Needs Owner"
             value={metrics.unassigned}
-            subtext={metrics.unassigned > 0 ? "⚠️ Immediate triage" : "Zero unassigned"}
+            subtext={metrics.unassigned > 0 ? "⚠️ Needs attention" : "All assigned"}
             icon={UserX}
             variant={metrics.unassigned > 0 ? "danger" : "default"}
             isActive={activeTab === "UNASSIGNED"}
@@ -904,14 +1037,16 @@ export default function Home() {
                       Clear Filters
                     </button>
                   )}
-                  <button
-                    type="button"
-                    onClick={() => setIsNewModalOpen(true)}
-                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
-                  >
-                    <PlusCircle className="w-4 h-4" />
-                    Log New Inquiry
-                  </button>
+                  {canCreateInquiry && (
+                    <button
+                      type="button"
+                      onClick={() => setIsNewModalOpen(true)}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                    >
+                      <PlusCircle className="w-4 h-4" />
+                      Log New Inquiry
+                    </button>
+                  )}
                 </div>
               </div>
             ) : (
@@ -921,6 +1056,7 @@ export default function Home() {
                     key={inquiry.id}
                     inquiry={inquiry}
                     currentUser={currentUser}
+                    canAssign={canAssign}
                     onSelect={(inq) => setSelectedInquiry(inq)}
                     onQuickAssign={handleQuickAssign}
                     onQuickStatusChange={handleUpdateStatus}
@@ -931,13 +1067,19 @@ export default function Home() {
           </div>
         </section>
       </main>
+      </div>
 
       {/* Detail & Handover Drawer Modal */}
       {selectedInquiry && (
         <InquiryDetailModal
           inquiry={selectedInquiry}
-          staffUsers={STAFF_USERS}
+          staffUsers={staffList}
           currentUser={currentUser}
+          canUpdateStatus={canUpdateStatus}
+          canUpdatePriority={canUpdatePriority}
+          canAssign={canAssign}
+          canAddNotes={canAddNotes}
+          canClose={canClose}
           onClose={() => setSelectedInquiry(null)}
           onUpdateStatus={handleUpdateStatus}
           onUpdatePriority={handleUpdatePriority}
@@ -950,15 +1092,34 @@ export default function Home() {
       {isNewModalOpen && (
         <NewInquiryModal
           categories={CATEGORIES}
-          staffUsers={STAFF_USERS}
+          staffUsers={staffList}
           currentUser={currentUser}
           onClose={() => setIsNewModalOpen(false)}
           onCreate={handleCreateInquiry}
         />
       )}
 
+      {/* Admin Staff Account & Access Management Modal */}
+      {isStaffModalOpen && isAdmin && (
+        <StaffManagementModal
+          currentUser={currentUser}
+          onClose={() => setIsStaffModalOpen(false)}
+          onStaffUpdated={refreshStaff}
+          toastSuccess={toastSuccess}
+          toastError={toastError}
+        />
+      )}
+
       {/* Toast Feedback Notifications */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
+  );
+}
+
+export default function Home() {
+  return (
+    <AuthProvider>
+      <DashboardApp />
+    </AuthProvider>
   );
 }

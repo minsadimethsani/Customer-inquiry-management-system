@@ -21,6 +21,7 @@ import {
 interface InquiryCardProps {
   inquiry: Inquiry;
   currentUser: User;
+  canAssign?: boolean;
   onSelect: (inquiry: Inquiry) => void;
   onQuickAssign: (inquiryId: string, user: User) => void;
   onQuickStatusChange: (inquiryId: string, newStatus: Inquiry["status"]) => void;
@@ -29,6 +30,7 @@ interface InquiryCardProps {
 export function InquiryCard({
   inquiry,
   currentUser,
+  canAssign = true,
   onSelect,
   onQuickAssign,
   onQuickStatusChange,
@@ -155,18 +157,20 @@ export function InquiryCard({
                 <UserX className="w-3.5 h-3.5" />
                 Unassigned
               </span>
-              <button
-                type="button"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  onQuickAssign(inquiry.id, currentUser);
-                }}
-                className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors"
-                title="Claim this ticket right now"
-              >
-                <UserCheck className="w-3 h-3" />
-                Claim Ticket
-              </button>
+              {canAssign && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onQuickAssign(inquiry.id, currentUser);
+                  }}
+                  className="inline-flex items-center gap-1 text-xs font-medium px-2 py-0.5 rounded bg-blue-50 text-blue-700 hover:bg-blue-100 border border-blue-200 transition-colors cursor-pointer"
+                  title="Claim this ticket right now"
+                >
+                  <UserCheck className="w-3 h-3" />
+                  Claim Ticket
+                </button>
+              )}
             </div>
           )}
         </div>

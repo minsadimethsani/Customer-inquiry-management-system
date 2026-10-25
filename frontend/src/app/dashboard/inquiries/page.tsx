@@ -19,6 +19,10 @@ import {
 } from "@/app/utils";
 import { InquiryDetailModal } from "@/app/components/InquiryDetailModal";
 import { useToast, ToastContainer } from "@/app/components/Toast";
+import { useAuth, AuthProvider } from "@/app/context/AuthContext";
+import { LoginPage } from "@/app/components/LoginPage";
+import { Sidebar } from "@/app/components/Sidebar";
+import { StaffManagementModal } from "@/app/components/StaffManagementModal";
 import {
   fetchInquiriesFromApi,
   updateInquiryStatusApi,
@@ -49,7 +53,15 @@ const STORAGE_KEY = "pulsedesk_inquiries_v1";
 const API_BASE_URL =
   process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000/api";
 
-export default function InquiriesDashboardPage() {
+function InquiriesDashboardContent() {
+  const {
+    user: currentUser,
+    isAuthenticated,
+    isLoading: isAuthLoading,
+    logout,
+    hasPermission,
+  } = useAuth();
+
   const [inquiries, setInquiries] = useState<Inquiry[]>([]);
   const [loading, setLoading] = useState(true);
   const [dataSource, setDataSource] = useState<"api" | "local">("local");
@@ -61,7 +73,10 @@ export default function InquiriesDashboardPage() {
 
   // Modal inspection
   const [selectedInquiry, setSelectedInquiry] = useState<Inquiry | null>(null);
-  const [currentUser] = useState<User>(STAFF_USERS[0]);
+  const [isStaffModalOpen, setIsStaffModalOpen] = useState(false);
+
+  const isAdmin = currentUser?.role === "ADMIN";
+  const canCreateInquiry = hasPermission("inquiries:create");
 
   // Usability Toast Notifications
   const {
@@ -209,58 +224,32 @@ export default function InquiriesDashboardPage() {
   const hasActiveFilters =
     statusFilter !== "ALL" || priorityFilter !== "ALL" || searchQuery.trim() !== "";
 
+  if (isAuthLoading) {
+    return (
+      <div className="min-h-screen bg-slate-900 flex flex-col items-center justify-center space-y-4">
+        <div className="w-10 h-10 border-3 border-blue-500/30 border-t-blue-500 rounded-full animate-spin" />
+      </div>
+    );
+  }
+
+  if (!isAuthenticated || !currentUser) {
+    return <LoginPage />;
+  }
+
   return (
-    <div className="min-h-screen bg-slate-50 flex flex-col font-sans text-slate-900">
-      {/* Top Navigation Bar */}
-      <header className="sticky top-0 z-40 w-full bg-white/95 backdrop-blur-md border-b border-slate-200 shadow-2xs">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3">
-            <Link
-              href="/"
-              className="w-9 h-9 rounded-xl bg-gradient-to-tr from-blue-600 to-indigo-600 flex items-center justify-center text-white shadow-md shadow-blue-500/20 hover:opacity-90 transition-opacity"
-              title="Return to PulseDesk Main Hub"
-            >
-              <LifeBuoy className="w-5 h-5" />
-            </Link>
-            <div>
-              <div className="flex items-center gap-2">
-                <span className="text-base font-extrabold tracking-tight text-slate-900">
-                  PulseDesk
-                </span>
-                <span className="text-[10px] font-bold uppercase tracking-wider bg-blue-50 text-blue-700 px-2 py-0.5 rounded-full border border-blue-200">
-                  Staff Directory
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 hidden sm:block">
-                Inquiry Management & Real-Time Status Tracking
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2.5">
-            <Link
-              href="/"
-              className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold text-slate-700 hover:text-slate-900 bg-slate-100 hover:bg-slate-200 transition-colors"
-            >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Back to Hub</span>
-            </Link>
-
-            <button
-              onClick={loadInquiries}
-              title="Refresh Inquiries"
-              className="p-2 text-slate-500 hover:text-slate-800 hover:bg-slate-100 rounded-lg transition-colors border border-slate-200 cursor-pointer"
-            >
-              <RefreshCw
-                className={`w-4 h-4 ${loading ? "animate-spin text-blue-600" : ""}`}
-              />
-            </button>
-          </div>
-        </div>
-      </header>
+    <div className="min-h-screen bg-slate-50 flex flex-col lg:flex-row font-sans text-slate-900">
+      {/* Left Navigation Sidebar */}
+      <Sidebar
+        currentUser={currentUser}
+        canCreateInquiry={canCreateInquiry}
+        totalCount={inquiries.length}
+        onOpenStaffModal={() => setIsStaffModalOpen(true)}
+        onLogout={logout}
+      />
 
       {/* Main Content Area */}
-      <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1">
+      <div className="flex-1 flex flex-col min-w-0">
+        <main className="max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 flex-1">
         {/* Page Title & Status Banner */}
         <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 mb-6">
           <div>
@@ -286,7 +275,7 @@ export default function InquiriesDashboardPage() {
             <div className="flex items-center gap-1.5 px-3 py-1 rounded-full text-xs font-semibold bg-emerald-50 border border-emerald-200 text-emerald-800">
               <ShieldCheck className="w-3.5 h-3.5 text-emerald-600" />
               <span>
-                {dataSource === "api" ? "Live API Connected" : "Local Data Store"}
+                {dataSource === "api" ? "System Online" : "Working Offline"}
               </span>
             </div>
           </div>
@@ -620,6 +609,7 @@ export default function InquiriesDashboardPage() {
           </div>
         </div>
       </main>
+      </div>
 
       {/* Inquiry Detail Modal */}
       {selectedInquiry && (
@@ -630,14 +620,21 @@ export default function InquiriesDashboardPage() {
           onClose={() => setSelectedInquiry(null)}
           onAssign={async (inqId: string, staff: User | null) => {
             if (selectedInquiry.status === "CLOSED") {
-              toastError("Action Prohibited", "Closed records cannot be reassigned.");
-              return { success: false, message: "Inquiry is CLOSED." };
+              const err = `Ticket #${selectedInquiry.ticketNumber} is closed and cannot be reassigned.`;
+              toastError("Ticket Already Closed", err);
+              return { success: false, message: err };
             }
 
-            // Persist to PostgreSQL via Node.js API
+            // Persist to database via API
             const res = await assignInquiryApi(inqId, staff?.id || null, currentUser.email);
             if (res && res.success === false) {
-              toastError("Assignment Failed", res.message || "Server rejected assignment.");
+              toastError(
+                "Assignment Failed",
+                res.message ||
+                  (staff
+                    ? `Could not assign ticket #${selectedInquiry.ticketNumber} to ${staff.name}. Please try again.`
+                    : "Could not unassign ticket. Please try again.")
+              );
               return res;
             }
 
@@ -651,8 +648,8 @@ export default function InquiriesDashboardPage() {
                       updatedAt: now,
                       lastActivity: {
                         text: staff
-                          ? `Reassigned to ${staff.name}`
-                          : "Returned to Unassigned queue",
+                          ? `Assigned to ${staff.name}`
+                          : "Returned to waiting queue",
                         actorName: currentUser.name,
                         timestamp: now,
                       },
@@ -666,29 +663,34 @@ export default function InquiriesDashboardPage() {
               );
             }
             toastSuccess(
-              "Assigned Successfully",
-              staff ? `Assigned to ${staff.name}` : "Unassigned ticket."
+              staff ? "Ticket Assigned" : "Ticket Returned to Queue",
+              staff
+                ? `Ticket #${selectedInquiry.ticketNumber} assigned to ${staff.name} (${staff.department || "Staff"}).`
+                : `Ticket #${selectedInquiry.ticketNumber} returned to the waiting queue.`
             );
             return { success: true };
           }}
           onUpdateStatus={async (inqId: string, newStatus: InquiryStatus) => {
             if (selectedInquiry.status === "CLOSED") {
-              const err = "Inquiry is CLOSED. Closed records are final and cannot be modified.";
-              toastError("Workflow Violation", err);
+              const err = `Ticket #${selectedInquiry.ticketNumber} is closed. Completed tickets cannot be modified.`;
+              toastError("Ticket Already Closed", err);
               return { success: false, message: err };
             }
 
             if (!canTransitionStatus(selectedInquiry.status, newStatus)) {
               const allowed = getAllowedTransitions(selectedInquiry.status).join(", ") || "None";
-              const err = `Cannot transition status from '${selectedInquiry.status}' to '${newStatus}'. Allowed: ${allowed}`;
-              toastError("Workflow Transition Violation", err);
+              const err = `Cannot change ticket #${selectedInquiry.ticketNumber} directly from ${selectedInquiry.status} to ${newStatus}. Permitted next steps: ${allowed}.`;
+              toastError("Status Change Not Allowed", err);
               return { success: false, message: err };
             }
 
-            // Persist to PostgreSQL via Node.js API
+            // Persist to database via API
             const res = await updateInquiryStatusApi(inqId, newStatus, currentUser.email);
             if (res && res.success === false) {
-              toastError("Status Update Failed", res.message || "Server rejected status change.");
+              toastError(
+                "Status Update Failed",
+                res.message || `Could not update ticket #${selectedInquiry.ticketNumber} to ${newStatus}. Please try again.`
+              );
               return res;
             }
 
@@ -715,22 +717,33 @@ export default function InquiriesDashboardPage() {
               );
             }
             toastSuccess(
-              "Status Updated",
-              `Ticket #${selectedInquiry.ticketNumber} transitioned to ${newStatus}.`
+              newStatus === "RESOLVED"
+                ? "Ticket Resolved"
+                : newStatus === "CLOSED"
+                ? "Ticket Closed"
+                : "Status Updated",
+              newStatus === "RESOLVED"
+                ? `Ticket #${selectedInquiry.ticketNumber} marked as resolved.`
+                : newStatus === "CLOSED"
+                ? `Ticket #${selectedInquiry.ticketNumber} closed and archived.`
+                : `Ticket #${selectedInquiry.ticketNumber} status changed to ${newStatus}.`
             );
             return { success: true };
           }}
           onUpdatePriority={async (inqId: string, newPriority: Priority) => {
             if (selectedInquiry.status === "CLOSED") {
-              const err = "Inquiry is CLOSED. Closed records cannot be modified.";
-              toastError("Workflow Violation", err);
+              const err = `Ticket #${selectedInquiry.ticketNumber} is closed. Priority cannot be changed on closed tickets.`;
+              toastError("Ticket Already Closed", err);
               return { success: false, message: err };
             }
 
-            // Persist to PostgreSQL via Node.js API
+            // Persist to database via API
             const res = await updateInquiryPriorityApi(inqId, newPriority, currentUser.email);
             if (res && res.success === false) {
-              toastError("Priority Update Failed", res.message || "Server rejected priority change.");
+              toastError(
+                "Priority Change Failed",
+                res.message || `Could not change priority for ticket #${selectedInquiry.ticketNumber}. Please try again.`
+              );
               return res;
             }
 
@@ -757,22 +770,30 @@ export default function InquiriesDashboardPage() {
               );
             }
             toastSuccess(
-              "Priority Updated",
-              `Ticket #${selectedInquiry.ticketNumber} set to ${newPriority}.`
+              newPriority === "URGENT" ? "Urgent Priority Set" : "Priority Updated",
+              newPriority === "URGENT"
+                ? `Ticket #${selectedInquiry.ticketNumber} marked as URGENT priority.`
+                : `Ticket #${selectedInquiry.ticketNumber} priority set to ${newPriority}.`
             );
             return { success: true };
           }}
           onAddMessage={async (inqId: string, text: string, isInternal: boolean) => {
             if (selectedInquiry.status === "CLOSED") {
-              const err = "Inquiry is CLOSED. Discussion is locked.";
-              toastError("Action Prohibited", err);
+              const err = `Ticket #${selectedInquiry.ticketNumber} is closed. Discussion is locked for closed tickets.`;
+              toastError("Ticket Already Closed", err);
               return { success: false, message: err };
             }
 
-            // Persist to PostgreSQL via Node.js API
+            // Persist to database via API
             const res = await addInquiryMessageApi(inqId, text, isInternal, currentUser.email);
             if (res && res.success === false) {
-              toastError("Message Failed", res.message || "Failed to record message.");
+              toastError(
+                isInternal ? "Note Failed" : "Reply Failed",
+                res.message ||
+                  (isInternal
+                    ? `Could not save internal note on ticket #${selectedInquiry.ticketNumber}. Please try again.`
+                    : `Could not send message to customer for ticket #${selectedInquiry.ticketNumber}. Please try again.`)
+              );
               return res;
             }
 
@@ -795,8 +816,8 @@ export default function InquiriesDashboardPage() {
                       updatedAt: now,
                       lastActivity: {
                         text: isInternal
-                          ? `Internal note logged by ${currentUser.name}`
-                          : `Response dispatched by ${currentUser.name}`,
+                          ? `Internal note added by ${currentUser.name}`
+                          : `Reply sent by ${currentUser.name}`,
                         actorName: currentUser.name,
                         timestamp: now,
                       },
@@ -805,16 +826,36 @@ export default function InquiriesDashboardPage() {
               )
             );
             toastSuccess(
-              isInternal ? "Staff Note Logged" : "Response Sent",
-              isInternal ? "Internal note recorded." : "Reply sent to customer."
+              isInternal ? "Note Saved" : "Reply Sent",
+              isInternal
+                ? `Internal note added to ticket #${selectedInquiry.ticketNumber}.`
+                : `Customer reply sent for ticket #${selectedInquiry.ticketNumber}.`
             );
             return { success: true };
           }}
         />
       )}
 
+      {/* Admin Staff Modal if opened */}
+      {isStaffModalOpen && isAdmin && (
+        <StaffManagementModal
+          currentUser={currentUser}
+          onClose={() => setIsStaffModalOpen(false)}
+          toastSuccess={toastSuccess}
+          toastError={toastError}
+        />
+      )}
+
       {/* Usability Toast Container */}
       <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
+  );
+}
+
+export default function InquiriesDashboardPage() {
+  return (
+    <AuthProvider>
+      <InquiriesDashboardContent />
+    </AuthProvider>
   );
 }

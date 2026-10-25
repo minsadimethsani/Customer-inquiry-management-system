@@ -6,7 +6,7 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
-    "test": "node test_auth.js && node test_rbac.js && node test_workflow.js",
+    "test": "node test_auth.js && node test_rbac.js && node test_workflow.js && node test_staff_permissions.js",
     "test:auth": "node test_auth.js",
     "test:rbac": "node test_rbac.js",
     "test:workflow": "node test_workflow.js",

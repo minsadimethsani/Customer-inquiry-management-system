@@ -33,6 +33,11 @@ interface InquiryDetailModalProps {
   inquiry: Inquiry;
   staffUsers: User[];
   currentUser: User;
+  canUpdateStatus?: boolean;
+  canUpdatePriority?: boolean;
+  canAssign?: boolean;
+  canAddNotes?: boolean;
+  canClose?: boolean;
   onClose: () => void;
   onUpdateStatus: (inquiryId: string, status: InquiryStatus) => Promise<any> | void;
   onUpdatePriority: (inquiryId: string, priority: Priority) => Promise<any> | void;
@@ -48,6 +53,11 @@ export function InquiryDetailModal({
   inquiry,
   staffUsers,
   currentUser,
+  canUpdateStatus = true,
+  canUpdatePriority = true,
+  canAssign = true,
+  canAddNotes = true,
+  canClose = true,
   onClose,
   onUpdateStatus,
   onUpdatePriority,
@@ -87,7 +97,7 @@ export function InquiryDetailModal({
 
     if (!canTransitionStatus(inquiry.status, newStatus)) {
       setActionError(
-        `Invalid status transition: Cannot transition from '${inquiry.status}' to '${newStatus}'. Allowed: ${nextAllowed.join(", ") || "None"}`
+        `Cannot change status from '${inquiry.status}' to '${newStatus}'. Inquiries must be resolved before they can be closed.`
       );
       return;
     }
@@ -96,10 +106,15 @@ export function InquiryDetailModal({
     try {
       const res = await onUpdateStatus(inquiry.id, newStatus);
       if (res && res.success === false) {
-        setActionError(res.message || "Failed to update status on server.");
+        setActionError(
+          res.message ||
+            `Could not change ticket #${inquiry.ticketNumber} status to '${newStatus}'. Please try again.`
+        );
       }
     } catch (err: any) {
-      setActionError(err.message || "Failed to update status.");
+      setActionError(
+        "Could not update status. Please check your connection and try again."
+      );
     } finally {
       setIsUpdatingStatus(false);
     }
@@ -110,7 +125,9 @@ export function InquiryDetailModal({
     setActionError(null);
 
     if (isClosed) {
-      setActionError("Inquiry is CLOSED. Closed records cannot be modified.");
+      setActionError(
+        `Ticket #${inquiry.ticketNumber} is closed. Priority cannot be changed on closed tickets.`
+      );
       return;
     }
 
@@ -118,10 +135,15 @@ export function InquiryDetailModal({
     try {
       const res = await onUpdatePriority(inquiry.id, newPriority);
       if (res && res.success === false) {
-        setActionError(res.message || "Failed to update priority.");
+        setActionError(
+          res.message ||
+            `Could not update priority for ticket #${inquiry.ticketNumber}. Please try again.`
+        );
       }
     } catch (err: any) {
-      setActionError(err.message || "Failed to update priority.");
+      setActionError(
+        "Could not update priority. Please check your connection and try again."
+      );
     } finally {
       setIsUpdatingPriority(false);
     }
@@ -130,7 +152,9 @@ export function InquiryDetailModal({
   const handleAssignChange = async (targetUser: User | null) => {
     setActionError(null);
     if (isClosed) {
-      setActionError("Inquiry is CLOSED. Closed records cannot be modified.");
+      setActionError(
+        `Ticket #${inquiry.ticketNumber} is closed and cannot be reassigned.`
+      );
       return;
     }
 
@@ -138,10 +162,17 @@ export function InquiryDetailModal({
     try {
       const res = await onAssign(inquiry.id, targetUser);
       if (res && res.success === false) {
-        setActionError(res.message || "Failed to update assignee.");
+        setActionError(
+          res.message ||
+            (targetUser
+              ? `Could not assign ticket #${inquiry.ticketNumber} to ${targetUser.name}. Please try again.`
+              : `Could not unassign ticket #${inquiry.ticketNumber}. Please try again.`)
+        );
       }
     } catch (err: any) {
-      setActionError(err.message || "Failed to assign inquiry.");
+      setActionError(
+        "Could not update assignment. Please check your connection and try again."
+      );
     } finally {
       setIsAssigning(false);
     }
@@ -153,7 +184,9 @@ export function InquiryDetailModal({
     setActionError(null);
 
     if (isClosed) {
-      setActionError("Cannot add messages: Inquiry is CLOSED.");
+      setActionError(
+        `Ticket #${inquiry.ticketNumber} is closed. New replies or notes cannot be added.`
+      );
       return;
     }
 
@@ -161,12 +194,19 @@ export function InquiryDetailModal({
     try {
       const res = await onAddMessage(inquiry.id, replyText.trim(), isInternalNote);
       if (res && res.success === false) {
-        setActionError(res.message || "Failed to dispatch message.");
+        setActionError(
+          res.message ||
+            (isInternalNote
+              ? `Could not save internal note on ticket #${inquiry.ticketNumber}. Please try again.`
+              : `Could not send message to customer for ticket #${inquiry.ticketNumber}. Please try again.`)
+        );
       } else {
         setReplyText("");
       }
     } catch (err: any) {
-      setActionError(err.message || "Failed to send message.");
+      setActionError(
+        "Could not send message. Please check your connection and try again."
+      );
     } finally {
       setIsSendingMessage(false);
     }
@@ -220,7 +260,7 @@ export function InquiryDetailModal({
             <div className="flex items-center gap-2">
               <Lock className="w-4 h-4 text-amber-400 shrink-0" />
               <span>
-                <strong>Archived Record:</strong> This inquiry is CLOSED. Closed records are terminal and immutable (no status changes or updates permitted).
+                <strong>Closed Ticket:</strong> This inquiry has been resolved and closed. Closed inquiries cannot be edited or reopened.
               </span>
             </div>
             <span className="px-2 py-0.5 rounded bg-slate-700 text-[10px] font-bold tracking-wider uppercase text-slate-300">
@@ -257,7 +297,8 @@ export function InquiryDetailModal({
               <div className="relative flex items-center">
                 <select
                   value={inquiry.status}
-                  disabled={isClosed || isUpdatingStatus}
+                  disabled={isClosed || isUpdatingStatus || !canUpdateStatus}
+                  title={!canUpdateStatus ? "Your account lacks permission to update status" : ""}
                   onChange={(e) => handleStatusChange(e.target.value as InquiryStatus)}
                   className={`text-xs font-medium border rounded-lg px-2.5 py-1.5 focus:outline-hidden focus:ring-2 focus:ring-blue-500 cursor-pointer disabled:opacity-60 disabled:cursor-not-allowed ${statusInfo.bg}`}
                 >
@@ -296,7 +337,8 @@ export function InquiryDetailModal({
               <div className="relative flex items-center">
                 <select
                   value={inquiry.priority}
-                  disabled={isClosed || isUpdatingPriority}
+                  disabled={isClosed || isUpdatingPriority || !canUpdatePriority}
+                  title={!canUpdatePriority ? "Your account lacks permission to modify priority" : ""}
                   onChange={(e) => handlePriorityChange(e.target.value as Priority)}
                   className="text-xs font-medium bg-slate-50 border border-slate-200 rounded-lg px-2.5 py-1.5 focus:outline-hidden focus:ring-2 focus:ring-blue-500 cursor-pointer text-slate-800 disabled:opacity-60 disabled:cursor-not-allowed"
                 >
@@ -320,7 +362,8 @@ export function InquiryDetailModal({
             <div className="relative flex items-center gap-2">
               <select
                 value={inquiry.assignedTo?.id || ""}
-                disabled={isClosed || isAssigning}
+                disabled={isClosed || isAssigning || !canAssign}
+                title={!canAssign ? "Your account lacks permission to assign tickets" : ""}
                 onChange={(e) => {
                   const selected =
                     staffUsers.find((u) => u.id === e.target.value) || null;
@@ -589,6 +632,10 @@ export function InquiryDetailModal({
             {isClosed ? (
               <div className="p-4 border-t border-slate-200 bg-slate-100 text-center text-xs text-slate-500 font-medium">
                 🔒 This inquiry is CLOSED. Comments and responses are locked.
+              </div>
+            ) : !canAddNotes ? (
+              <div className="p-4 border-t border-slate-200 bg-slate-50 text-center text-xs text-slate-500 font-medium">
+                🛡️ Your account does not have permission to post customer responses or internal notes.
               </div>
             ) : (
               <form

@@ -2,6 +2,7 @@ const express = require("express");
 const cors = require("cors");
 const authRoutes = require("./routes/authRoutes");
 const inquiryRoutes = require("./routes/inquiryRoutes");
+const staffRoutes = require("./routes/staffRoutes");
 const prisma = require("./lib/prisma");
 
 const app = express();
@@ -43,19 +44,8 @@ app.get("/api/categories", authenticate, async (req, res, next) => {
   }
 });
 
-// Staff list — for assignee dropdowns (authenticated)
-app.get("/api/staff", authenticate, async (req, res, next) => {
-  try {
-    const staff = await prisma.user.findMany({
-      where: { isActive: true },
-      select: { id: true, name: true, email: true, role: true, department: true, avatarUrl: true },
-      orderBy: { name: "asc" },
-    });
-    res.status(200).json({ data: staff });
-  } catch (err) {
-    next(err);
-  }
-});
+// Staff Management Routes
+app.use("/api/staff", staffRoutes);
 
 // 404 Route Not Found Handler
 app.use((req, res, next) => {

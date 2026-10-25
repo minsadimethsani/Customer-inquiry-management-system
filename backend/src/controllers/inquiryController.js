@@ -142,9 +142,11 @@ exports.listInquiries = async (req, res, next) => {
 
     // ── RBAC Access Rule Enforcement ──────────────────────────────────────────
     // - ADMIN can view, manage, and update all customer inquiries across the system.
-    // - Staff can view all general inquiries (unassigned) or specifically assigned inquiries.
+    // - Staff with 'inquiries:view_all' permission can view all inquiries.
+    // - Staff without 'inquiries:view_all' can view general inquiries (unassigned) or specifically assigned inquiries.
     const isAdmin = req.user?.role === "ADMIN";
-    if (!isAdmin) {
+    const canViewAll = isAdmin || (Array.isArray(req.user?.permissions) && req.user.permissions.includes("inquiries:view_all"));
+    if (!canViewAll) {
       andConditions.push({
         OR: [
           { assignedToId: req.user?.id },
@@ -267,8 +269,10 @@ exports.getInquiry = async (req, res, next) => {
 
     // ── RBAC Access Rule Enforcement ──────────────────────────────────────────
     // - ADMIN can view all customer inquiries across the system.
-    // - Staff can view general inquiries (unassigned) or specifically assigned inquiries.
-    if (req.user?.role !== "ADMIN") {
+    // - Staff with 'inquiries:view_all' can view any inquiry.
+    // - Staff without 'inquiries:view_all' can view general inquiries (unassigned) or specifically assigned inquiries.
+    const canViewAllInq = req.user?.role === "ADMIN" || (Array.isArray(req.user?.permissions) && req.user.permissions.includes("inquiries:view_all"));
+    if (!canViewAllInq) {
       const isAssigned = Boolean(inquiry.assignedTo && inquiry.assignedTo.id === req.user?.id);
       const isUnassigned = !inquiry.assignedTo;
       const isCreator = Boolean(inquiry.createdBy && inquiry.createdBy.id === req.user?.id);
@@ -313,22 +317,22 @@ exports.createInquiry = async (req, res, next) => {
 
     // ── Validation ──────────────────────────────────────────────────────────
     const errors = {};
-    if (!subject || !subject.trim()) errors.subject = "Subject is required.";
-    if (!description || !description.trim()) errors.description = "Description is required.";
-    if (!customerName || !customerName.trim()) errors.customerName = "Customer name is required.";
+    if (!subject || !subject.trim()) errors.subject = "Subject is required to summarize the customer inquiry.";
+    if (!description || !description.trim()) errors.description = "Detailed issue description is required.";
+    if (!customerName || !customerName.trim()) errors.customerName = "Customer contact name is required.";
     if (!customerEmail || !customerEmail.trim()) {
-      errors.customerEmail = "Customer email is required.";
+      errors.customerEmail = "Customer contact email is required.";
     } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(customerEmail.trim())) {
-      errors.customerEmail = "Customer email is not a valid email address.";
+      errors.customerEmail = `'${customerEmail.trim()}' is not a valid email address.`;
     }
 
     const VALID_PRIORITIES = ["LOW", "MEDIUM", "HIGH", "URGENT"];
     const VALID_CHANNELS = ["WEB_PORTAL", "EMAIL", "CHAT", "PHONE"];
     if (!VALID_PRIORITIES.includes(priority)) {
-      errors.priority = `Priority must be one of: ${VALID_PRIORITIES.join(", ")}.`;
+      errors.priority = `Invalid priority '${priority}'. Allowed priorities are: ${VALID_PRIORITIES.join(", ")}.`;
     }
     if (!VALID_CHANNELS.includes(channel)) {
-      errors.channel = `Channel must be one of: ${VALID_CHANNELS.join(", ")}.`;
+      errors.channel = `Invalid intake channel '${channel}'. Allowed channels are: ${VALID_CHANNELS.join(", ")}.`;
     }
 
     if (Object.keys(errors).length > 0) {
@@ -347,7 +351,7 @@ exports.createInquiry = async (req, res, next) => {
         return res.status(400).json({
           success: false,
           error: "Validation Error",
-          message: "Category not found.",
+          message: `Category with ID '${categoryId}' does not exist or has been removed.`,
         });
       }
     }
@@ -357,7 +361,7 @@ exports.createInquiry = async (req, res, next) => {
         return res.status(400).json({
           success: false,
           error: "Validation Error",
-          message: "Assigned user not found or is inactive.",
+          message: `Assigned staff member with ID '${assignedToId}' was not found or is currently inactive.`,
         });
       }
     }
@@ -446,7 +450,8 @@ exports.createInquiry = async (req, res, next) => {
     });
 
     return res.status(201).json({
-      message: "Inquiry created successfully.",
+      success: true,
+      message: `Inquiry ticket #${inquiry.ticketNumber} created successfully for ${inquiry.customerName} via ${inquiry.channel}.`,
       data: inquiry,
     });
   } catch (error) {
@@ -529,6 +534,32 @@ exports.updateInquiry = async (req, res, next) => {
       customerPhone,
       customerCompany,
     } = req.body;
+
+    // ── Granular Specific Access Permission Check ────────────────────────────
+    const userPerms = Array.isArray(req.user?.permissions) ? req.user.permissions : [];
+    if (!isAdmin) {
+      if (status !== undefined && !userPerms.includes("inquiries:update_status")) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          message: "You do not have permission to update inquiry status.",
+        });
+      }
+      if (priority !== undefined && !userPerms.includes("inquiries:update_priority")) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          message: "You do not have permission to modify inquiry priority.",
+        });
+      }
+      if (assignedToId !== undefined && !userPerms.includes("inquiries:assign")) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          message: "You do not have permission to assign or reassign inquiries.",
+        });
+      }
+    }
 
     // ── Validation ──────────────────────────────────────────────────────────
     const VALID_STATUSES = ["OPEN", "IN_PROGRESS", "PENDING_CUSTOMER", "RESOLVED", "CLOSED"];
@@ -677,8 +708,21 @@ exports.updateInquiry = async (req, res, next) => {
       return result;
     });
 
+    // Construct custom tailored success message based on what was updated
+    let customUpdateMessage = `Ticket #${existing.ticketNumber} updated successfully.`;
+    if (status !== undefined && status !== existing.status) {
+      customUpdateMessage = `Ticket #${existing.ticketNumber} status successfully updated from ${existing.status} to ${status}.`;
+    } else if (priority !== undefined && priority !== existing.priority) {
+      customUpdateMessage = `Ticket #${existing.ticketNumber} priority level adjusted to ${priority}.`;
+    } else if (assignedToId !== undefined && assignedToId !== existing.assignedToId) {
+      customUpdateMessage = updated.assignedTo
+        ? `Ticket #${existing.ticketNumber} reassigned to ${updated.assignedTo.name} (${updated.assignedTo.department || "Operations"}).`
+        : `Ticket #${existing.ticketNumber} unassigned and returned to the triage queue.`;
+    }
+
     return res.status(200).json({
-      message: "Inquiry updated successfully.",
+      success: true,
+      message: customUpdateMessage,
       data: updated,
     });
   } catch (error) {
@@ -718,17 +762,26 @@ exports.deleteInquiry = async (req, res, next) => {
       }
       await prisma.inquiry.delete({ where: { id } });
       return res.status(200).json({
-        message: `Inquiry ${existing.ticketNumber} has been permanently deleted.`,
+        success: true,
+        message: `Inquiry ticket #${existing.ticketNumber} has been permanently deleted from the database.`,
       });
     }
 
     // RBAC: Staff users can only close inquiries assigned to them or unassigned
     if (req.user?.role !== "ADMIN") {
+      if (!(Array.isArray(req.user?.permissions) && req.user.permissions.includes("inquiries:close"))) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          message: "You do not have permission to close inquiries.",
+        });
+      }
+
       if (existing.assignedToId && existing.assignedToId !== req.user?.id) {
         return res.status(403).json({
           success: false,
           error: "Forbidden",
-          message: "You are not authorized to close this inquiry. It is assigned to another staff member.",
+          message: `You are not authorized to close inquiry #${existing.ticketNumber}. It is assigned to another staff member.`,
         });
       }
     }
@@ -738,7 +791,7 @@ exports.deleteInquiry = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: "Bad Request",
-        message: "Inquiry is already CLOSED. Closed inquiries are final and cannot be modified or reopened.",
+        message: `Inquiry #${existing.ticketNumber} is already CLOSED. Closed inquiries are final and cannot be modified or reopened.`,
       });
     }
 
@@ -746,7 +799,7 @@ exports.deleteInquiry = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: "Bad Request",
-        message: `Cannot close inquiry with status '${existing.status}'. Inquiries must be in 'RESOLVED' status before they can be closed.`,
+        message: `Cannot close inquiry #${existing.ticketNumber} with status '${existing.status}'. Inquiries must be in 'RESOLVED' status before they can be closed.`,
       });
     }
 
@@ -766,7 +819,8 @@ exports.deleteInquiry = async (req, res, next) => {
     });
 
     return res.status(200).json({
-      message: `Inquiry ${existing.ticketNumber} has been closed.`,
+      success: true,
+      message: `Inquiry ticket #${existing.ticketNumber} has been officially closed and archived.`,
     });
   } catch (error) {
     next(error);
@@ -790,20 +844,20 @@ exports.addMessage = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: "Validation Error",
-        message: "Message body is required.",
+        message: "Message body cannot be empty. Please provide content before submitting.",
       });
     }
 
     const inquiry = await prisma.inquiry.findUnique({
       where: { id },
-      select: { id: true, status: true, assignedToId: true },
+      select: { id: true, ticketNumber: true, status: true, assignedToId: true },
     });
 
     if (!inquiry) {
       return res.status(404).json({
         success: false,
         error: "Not Found",
-        message: `Inquiry with id '${id}' does not exist.`,
+        message: `Inquiry with id '${id}' does not exist in the database.`,
       });
     }
 
@@ -812,7 +866,7 @@ exports.addMessage = async (req, res, next) => {
       return res.status(403).json({
         success: false,
         error: "Forbidden",
-        message: "You are not authorized to add messages to this inquiry. It is assigned to another staff member.",
+        message: `You are not authorized to add messages or notes to inquiry #${inquiry.ticketNumber}. It is assigned to another staff member.`,
       });
     }
 
@@ -820,7 +874,7 @@ exports.addMessage = async (req, res, next) => {
       return res.status(400).json({
         success: false,
         error: "Bad Request",
-        message: "Inquiry is CLOSED. Cannot add messages or notes to a closed inquiry.",
+        message: `Inquiry #${inquiry.ticketNumber} is CLOSED. Discussion is locked and cannot receive new messages or notes.`,
       });
     }
 
@@ -868,8 +922,13 @@ exports.addMessage = async (req, res, next) => {
       return msg;
     });
 
+    const customMsg = Boolean(isInternalNote)
+      ? `Internal note added to inquiry #${inquiry.ticketNumber} by ${senderName}.`
+      : `Customer response recorded for inquiry #${inquiry.ticketNumber}.`;
+
     return res.status(201).json({
-      message: "Message added successfully.",
+      success: true,
+      message: customMsg,
       data: message,
     });
   } catch (error) {

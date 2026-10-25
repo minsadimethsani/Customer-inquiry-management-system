@@ -10,16 +10,41 @@ const prisma = new PrismaClient();
 
 // Standard test password hash (representing "Password123!")
 const TEST_PASSWORD_HASH =
-  "$2a$12$e8k6m4P5Gq4x9Zz3E.Z4g.Uj8L9wK6M4v1T3Y7X2Q5W8V9B0C1D2E";
+  "$2b$10$IPQYdqcyoLM0HEkpLMF0iuYDRtnr7cqFJuJU9yL5n3Z7KXKdMTWxS";
+
+// Super Admin password hash (representing "Methsani123#")
+const SUPER_ADMIN_PASSWORD_HASH =
+  "$2b$10$vztcx8aiM93un310LN/d4O9USkKhezmbOnOqZ0SbD2bsKGnZX/Vz.";
+
+const ALL_ADMIN_PERMISSIONS = [
+  "inquiries:create",
+  "inquiries:update_status",
+  "inquiries:assign",
+  "inquiries:update_priority",
+  "inquiries:add_notes",
+  "inquiries:close",
+  "inquiries:view_all",
+  "inquiries:delete",
+  "staff:manage",
+];
 
 // System users are strictly staff members who record and handle inquiries
 export const TEST_STAFF_USERS = [
+  {
+    email: "mmethsani@gmail.com",
+    name: "Super Administrator",
+    role: Role.ADMIN,
+    passwordHash: SUPER_ADMIN_PASSWORD_HASH,
+    department: "Executive Management",
+    permissions: ALL_ADMIN_PERMISSIONS,
+  },
   {
     email: "admin@example.com",
     name: "System Administrator",
     role: Role.ADMIN,
     passwordHash: TEST_PASSWORD_HASH,
     department: "Executive Management",
+    permissions: ALL_ADMIN_PERMISSIONS,
   },
   {
     email: "elena.r@services.com",
@@ -108,8 +133,12 @@ async function main() {
         role: staff.role,
         department: staff.department,
         passwordHash: staff.passwordHash,
+        permissions: staff.permissions || (staff.role === Role.ADMIN ? ALL_ADMIN_PERMISSIONS : []),
       },
-      create: staff,
+      create: {
+        ...staff,
+        permissions: staff.permissions || (staff.role === Role.ADMIN ? ALL_ADMIN_PERMISSIONS : []),
+      },
     });
     staffMap.set(staff.email, createdStaff.id);
     console.log(

@@ -61,17 +61,55 @@ function authenticate(req, res, next) {
 function authorizeRoles(...allowedRoles) {
   return (req, res, next) => {
     if (!req.user || !allowedRoles.includes(req.user.role)) {
+      const currentRole = req.user?.role || "ANONYMOUS";
       return res.status(403).json({
         success: false,
         error: "Forbidden",
-        message: "You do not have permission to perform this action.",
+        message: `Role authorization failed: Action requires one of [${allowedRoles.join(", ")}], but your account role is '${currentRole}'.`,
       });
     }
     next();
   };
 }
 
+/**
+ * Granular Permission-based authorization guard
+ * Usage: router.post('/inquiries', authenticate, authorizePermissions('inquiries:create'), handler);
+ * ADMINs always pass. For AGENTs, they must hold the required permission(s).
+ */
+function authorizePermissions(...requiredPermissions) {
+  return (req, res, next) => {
+    if (!req.user) {
+      return res.status(401).json({
+        success: false,
+        error: "Unauthorized",
+        message: "Authentication required to verify permission credentials.",
+      });
+    }
+
+    // Admins have all permissions
+    if (req.user.role === "ADMIN") {
+      return next();
+    }
+
+    const userPerms = Array.isArray(req.user.permissions) ? req.user.permissions : [];
+    const hasAll = requiredPermissions.every((p) => userPerms.includes(p));
+
+    if (!hasAll) {
+      const missing = requiredPermissions.filter((p) => !userPerms.includes(p));
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden",
+        message: `Access denied. Your account lacks the required permission: ${missing.join(", ")}. Please request this access from an administrator.`,
+      });
+    }
+
+    return next();
+  };
+}
+
 module.exports = {
   authenticate,
   authorizeRoles,
+  authorizePermissions,
 };

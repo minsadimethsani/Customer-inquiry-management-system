@@ -23,52 +23,99 @@ export function setStoredToken(token: string): void {
 }
 
 /**
- * Log in to the backend API and store the token
+ * Remove the stored JWT token on logout
  */
-export async function loginStaff(
-  email = "admin@example.com",
-  password = "Password123!"
-): Promise<string | null> {
+export function removeStoredToken(): void {
+  if (typeof window !== "undefined") {
+    localStorage.removeItem(TOKEN_KEY);
+    localStorage.removeItem("pulsedesk_current_user_v1");
+  }
+}
+
+/**
+ * Log in to the backend API with provided credentials
+ */
+export async function loginUserApi(
+  email: string,
+  password: string
+): Promise<{ success: boolean; token?: string; user?: User; message?: string }> {
   try {
     const res = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      body: JSON.stringify({ email: email.trim(), password }),
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      return {
+        success: false,
+        message:
+          data.message ||
+          "Authentication failed: The email or password entered does not match our records.",
+      };
+    }
+
+    if (data.token) {
+      setStoredToken(data.token);
+      if (typeof window !== "undefined" && data.user) {
+        localStorage.setItem("pulsedesk_current_user_v1", JSON.stringify(data.user));
+      }
+      return {
+        success: true,
+        token: data.token,
+        user: data.user,
+        message:
+          data.message ||
+          `Welcome, ${data.user?.name || "Staff Member"}! Authentication verified successfully.`,
+      };
+    }
+
+    return {
+      success: false,
+      message: "Sign-in could not be completed. Please try again.",
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      message:
+        "Unable to connect to PulseDesk. Please check your internet connection or try again shortly.",
+    };
+  }
+}
+
+/**
+ * Fetch profile of currently authenticated user from /api/auth/me
+ */
+export async function fetchCurrentUserApi(): Promise<User | null> {
+  try {
+    const token = getStoredToken();
+    if (!token) return null;
+
+    const res = await fetch(`${API_BASE}/auth/me`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
     });
 
     if (!res.ok) return null;
     const data = await res.json();
-    if (data.token) {
-      setStoredToken(data.token);
-      return data.token;
-    }
+    return data.user || null;
   } catch {
-    // Network or server unreachable
+    return null;
   }
-  return null;
 }
 
 /**
- * Ensure an authentication token is available
- */
-async function ensureToken(userEmail?: string): Promise<string | null> {
-  let token = getStoredToken();
-  if (token) return token;
-
-  const emailToUse = userEmail || "admin@example.com";
-  token = await loginStaff(emailToUse, "Password123!");
-  return token;
-}
-
-/**
- * Helper to make authenticated requests with token
+ * Helper to make authenticated requests with Bearer token
  */
 async function authFetch(
   endpoint: string,
   options: RequestInit = {},
-  userEmail?: string
+  _userEmail?: string
 ): Promise<Response> {
-  const token = await ensureToken(userEmail);
+  const token = getStoredToken();
 
   const headers: Record<string, string> = {
     "Content-Type": "application/json",
@@ -193,7 +240,9 @@ export async function createInquiryApi(
         success: false,
         status: res.status,
         error: json.error || "SaveError",
-        message: json.message || "Failed to create inquiry.",
+        message:
+          json.message ||
+          `Unable to register inquiry for customer '${payload.customerName}'. Please review required fields.`,
         details: json.details,
       };
     }
@@ -234,14 +283,16 @@ export async function createInquiryApi(
     return {
       success: true,
       status: 201,
-      message: "Inquiry created successfully.",
+      message:
+        json.message ||
+        `Inquiry ticket #${inquiry.ticketNumber} created successfully for ${inquiry.customer.name}.`,
       data: inquiry,
     };
   } catch (err: any) {
     return {
       success: false,
       error: "NetworkError",
-      message: err.message || "Could not reach server. Saved locally in offline cache.",
+      message: "Could not submit inquiry. Please check your internet connection.",
     };
   }
 }
@@ -270,21 +321,25 @@ export async function updateInquiryStatusApi(
         success: false,
         status: res.status,
         error: json.error || "UpdateError",
-        message: json.message || "Failed to update inquiry status.",
+        message:
+          json.message ||
+          `Could not update inquiry status to '${newStatus}'. Please try again.`,
       };
     }
 
     return {
       success: true,
       status: 200,
-      message: `Status updated to ${newStatus}.`,
+      message:
+        json.message ||
+        `Inquiry status updated to ${newStatus}.`,
       data: json.data || json,
     };
   } catch (err: any) {
     return {
       success: false,
       error: "NetworkError",
-      message: err.message || "Could not reach server. Status updated in local cache.",
+      message: "Could not update inquiry status. Please check your connection.",
     };
   }
 }
@@ -313,20 +368,24 @@ export async function updateInquiryPriorityApi(
         success: false,
         status: res.status,
         error: json.error || "UpdateError",
-        message: json.message || "Failed to update priority.",
+        message:
+          json.message ||
+          `Could not update inquiry priority to '${newPriority}'. Please try again.`,
       };
     }
 
     return {
       success: true,
       status: 200,
-      message: `Priority updated to ${newPriority}.`,
+      message:
+        json.message ||
+        `Inquiry priority updated to ${newPriority}.`,
     };
   } catch (err: any) {
     return {
       success: false,
       error: "NetworkError",
-      message: err.message || "Could not reach server.",
+      message: "Could not update priority. Please check your connection.",
     };
   }
 }
@@ -355,20 +414,28 @@ export async function assignInquiryApi(
         success: false,
         status: res.status,
         error: json.error || "UpdateError",
-        message: json.message || "Failed to reassign inquiry.",
+        message:
+          json.message ||
+          (assignedToId
+            ? "Could not assign inquiry to selected team member. Please try again."
+            : "Could not unassign inquiry. Please try again."),
       };
     }
 
     return {
       success: true,
       status: 200,
-      message: "Assignment updated successfully.",
+      message:
+        json.message ||
+        (assignedToId
+          ? "Inquiry assignment updated successfully."
+          : "Inquiry returned to waiting queue."),
     };
   } catch (err: any) {
     return {
       success: false,
       error: "NetworkError",
-      message: err.message || "Could not reach server.",
+      message: "Could not update assignment. Please check your connection.",
     };
   }
 }
@@ -398,21 +465,143 @@ export async function addInquiryMessageApi(
         success: false,
         status: res.status,
         error: json.error || "MessageError",
-        message: json.message || "Failed to add message.",
+        message:
+          json.message ||
+          (isInternalNote
+            ? "Could not save internal note. Please try again."
+            : "Could not send reply to customer. Please try again."),
       };
     }
 
     return {
       success: true,
       status: 201,
-      message: isInternalNote ? "Internal note logged." : "Customer message dispatched.",
+      message:
+        json.message ||
+        (isInternalNote
+          ? "Internal staff note saved."
+          : "Customer message sent successfully."),
       data: json.data || json,
     };
   } catch (err: any) {
     return {
       success: false,
       error: "NetworkError",
-      message: err.message || "Could not reach server.",
+      message:
+        isInternalNote
+          ? "Could not save note. Please check your connection."
+          : "Could not send message. Please check your connection.",
+    };
+  }
+}
+
+/**
+ * Fetch staff accounts (Admin gets all staff with permissions; Agent gets active staff)
+ */
+export async function fetchStaffApi(): Promise<User[]> {
+  try {
+    const res = await authFetch("/staff");
+    if (!res.ok) return [];
+    const json = await res.json();
+    return json.data || [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Create a new staff account with specific access permissions (ADMIN only)
+ */
+export async function createStaffApi(payload: {
+  name: string;
+  email: string;
+  password: string;
+  role?: string;
+  department?: string;
+  permissions?: string[];
+}): Promise<ApiMutationResult<User>> {
+  try {
+    const res = await authFetch("/staff", {
+      method: "POST",
+      body: JSON.stringify(payload),
+    });
+
+    const json = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      return {
+        success: false,
+        status: res.status,
+        error: json.error || "CreateStaffError",
+        message:
+          json.message ||
+          `Could not create staff account for '${payload.name}'. Please check the details.`,
+        details: json.details,
+      };
+    }
+
+    return {
+      success: true,
+      status: 201,
+      message:
+        json.message ||
+        `Staff account for '${payload.name}' created successfully.`,
+      data: json.data,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: "NetworkError",
+      message: "Could not create staff account. Please check your connection.",
+    };
+  }
+}
+
+/**
+ * Update staff account details, active status, or permissions (ADMIN only)
+ */
+export async function updateStaffApi(
+  staffId: string,
+  payload: {
+    name?: string;
+    department?: string;
+    role?: string;
+    isActive?: boolean;
+    permissions?: string[];
+  }
+): Promise<ApiMutationResult<User>> {
+  try {
+    const res = await authFetch(`/staff/${staffId}`, {
+      method: "PATCH",
+      body: JSON.stringify(payload),
+    });
+
+    const json = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      return {
+        success: false,
+        status: res.status,
+        error: json.error || "UpdateStaffError",
+        message:
+          json.message ||
+          "Could not update staff account. Please try again.",
+      };
+    }
+
+    return {
+      success: true,
+      status: 200,
+      message:
+        json.message ||
+        "Staff account updated successfully.",
+      data: json.data,
+    };
+  } catch (err: any) {
+    return {
+      success: false,
+      error: "NetworkError",
+      message: "Could not update staff account. Please check your connection.",
     };
   }
 }

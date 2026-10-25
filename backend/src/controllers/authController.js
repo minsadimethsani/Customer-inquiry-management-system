@@ -10,12 +10,24 @@ exports.login = async (req, res, next) => {
   try {
     const { email, password } = req.body;
 
-    // Validate input fields
-    if (!email || !password) {
+    // Validate input fields with custom messages
+    const errors = {};
+    if (!email || !email.trim()) {
+      errors.email = "Work email address is required to sign in.";
+    }
+    if (!password) {
+      errors.password = "Password is required to authenticate your identity.";
+    }
+
+    if (Object.keys(errors).length > 0) {
       return res.status(400).json({
         success: false,
         error: "Validation Error",
-        message: "Email and password are required.",
+        message:
+          !email && !password
+            ? "Please provide both your work email and password to sign in."
+            : Object.values(errors)[0],
+        details: errors,
       });
     }
 
@@ -30,7 +42,7 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         error: "Unauthorized",
-        message: "Invalid email or password.",
+        message: "Authentication failed. No active staff account matches the provided email address.",
       });
     }
 
@@ -39,7 +51,7 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         error: "Unauthorized",
-        message: "Account has been deactivated. Please contact an administrator.",
+        message: `Account for '${user.email}' is currently deactivated. Please contact a system administrator.`,
       });
     }
 
@@ -50,7 +62,7 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         error: "Unauthorized",
-        message: "Authentication failed. No password configured for this user.",
+        message: "Authentication failed. No password credentials have been configured for this user.",
       });
     }
 
@@ -61,7 +73,7 @@ exports.login = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         error: "Unauthorized",
-        message: "Invalid email or password.",
+        message: "Authentication failed. The password entered does not match our records.",
       });
     }
 
@@ -74,13 +86,14 @@ exports.login = async (req, res, next) => {
       name: user.name,
       email: user.email,
       role: user.role,
+      permissions: user.permissions || [],
     };
 
     const token = jwt.sign(payload, jwtSecret, { expiresIn });
 
-    // Return token and basic user details
+    // Return token and basic user details with custom tailored message
     return res.status(200).json({
-      message: "Login successful",
+      message: `Authentication successful. Welcome, ${user.name} (${user.role} - ${user.department || "Operations Desk"}).`,
       token,
       user: {
         id: user.id,
@@ -88,6 +101,8 @@ exports.login = async (req, res, next) => {
         email: user.email,
         role: user.role,
         department: user.department || null,
+        avatarUrl: user.avatarUrl || null,
+        permissions: user.permissions || [],
       },
     });
   } catch (error) {
@@ -110,6 +125,7 @@ exports.getMe = async (req, res, next) => {
         role: true,
         department: true,
         avatarUrl: true,
+        permissions: true,
         isActive: true,
         createdAt: true,
       },

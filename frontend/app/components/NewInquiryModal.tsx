@@ -40,26 +40,26 @@ export function NewInquiryModal({
     setSubmissionError(null);
     setIsDuplicate(false);
 
-    // Client-side required field validation
+    // Required field validation with friendly messages
     if (!customerName.trim()) {
-      setSubmissionError("Customer name is required.");
+      setSubmissionError("Please enter the customer's full name.");
       return;
     }
     if (!customerEmail.trim()) {
-      setSubmissionError("Customer email is required.");
+      setSubmissionError("Please enter the customer's email address.");
       return;
     }
     const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
     if (!emailRegex.test(customerEmail.trim())) {
-      setSubmissionError("Please provide a valid customer email address.");
+      setSubmissionError("Please enter a valid email address (e.g. name@company.com).");
       return;
     }
     if (!subject.trim()) {
-      setSubmissionError("Subject / issue summary is required.");
+      setSubmissionError("Please provide a brief subject or topic for this inquiry.");
       return;
     }
     if (!description.trim()) {
-      setSubmissionError("Inquiry details / message description is required.");
+      setSubmissionError("Please provide a description of the customer's issue or request.");
       return;
     }
 
@@ -145,8 +145,8 @@ export function NewInquiryModal({
         setSubmissionError(
           result.message ||
             (isConflict
-              ? "Duplicate inquiry: An identical inquiry from this email with the same subject was recently submitted. Please check existing tickets."
-              : "Failed to save inquiry. Please check your inputs and try again.")
+              ? `A similar inquiry with subject '${subject.trim()}' was already received from this customer within the last 5 minutes.`
+              : "Unable to save this inquiry. Please check the details and try again.")
         );
         return;
       }
@@ -155,7 +155,7 @@ export function NewInquiryModal({
     } catch (err: any) {
       setIsSubmitting(false);
       setSubmissionError(
-        err.message || "An unexpected error occurred while saving the inquiry."
+        "Could not save inquiry. Please check your internet connection and try again."
       );
     }
   };

@@ -1,6 +1,6 @@
 const express = require("express");
 const router = express.Router();
-const { authenticate, authorizeRoles } = require("../middleware/auth");
+const { authenticate, authorizeRoles, authorizePermissions } = require("../middleware/auth");
 const {
   listInquiries,
   getInquiry,
@@ -21,10 +21,10 @@ router.get("/stats", getStats);
 
 /**
  * GET    /api/inquiries          — list with filters + pagination
- * POST   /api/inquiries          — create new inquiry (any authenticated staff)
+ * POST   /api/inquiries          — create new inquiry (requires inquiries:create permission)
  */
 router.get("/", listInquiries);
-router.post("/", createInquiry);
+router.post("/", authorizePermissions("inquiries:create"), createInquiry);
 
 /**
  * GET    /api/inquiries/:id      — full inquiry detail (messages + activity log)
@@ -42,6 +42,6 @@ router.delete("/:id", deleteInquiry);
  * POST /api/inquiries/:id/messages
  * Body: { body: string, isInternalNote?: boolean }
  */
-router.post("/:id/messages", addMessage);
+router.post("/:id/messages", authorizePermissions("inquiries:add_notes"), addMessage);
 
 module.exports = router;
