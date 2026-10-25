@@ -22,6 +22,41 @@ async function generateTicketNumber() {
 }
 
 /**
+ * ─────────────────────────────────────────────────────────────────────────────
+ * Inquiry Status Workflow & State Machine
+ * ─────────────────────────────────────────────────────────────────────────────
+ *
+ * State Transition Rules & Architectural Reasoning:
+ * 1. 'OPEN' -> 'IN_PROGRESS':
+ *    Incoming inquiry is claimed/assigned and actively being investigated by staff.
+ *    Invalid: Cannot jump from 'OPEN' straight to 'CLOSED' or 'RESOLVED'.
+ *
+ * 2. 'IN_PROGRESS' -> 'PENDING_CUSTOMER' | 'RESOLVED':
+ *    Staff asks customer for clarification ('PENDING_CUSTOMER') or implements fix ('RESOLVED').
+ *    Invalid: Cannot jump straight to 'CLOSED' without resolution. Cannot regress to 'OPEN'.
+ *
+ * 3. 'PENDING_CUSTOMER' -> 'IN_PROGRESS' | 'RESOLVED':
+ *    Customer replies with requested data ('IN_PROGRESS') or confirms resolution ('RESOLVED').
+ *    Invalid: Cannot jump straight to 'CLOSED' without resolution. Cannot regress to 'OPEN'.
+ *
+ * 4. 'RESOLVED' -> 'IN_PROGRESS' | 'CLOSED':
+ *    - 'RESOLVED' -> 'CLOSED': Final customer acceptance or SLA completion.
+ *    - 'RESOLVED' -> 'IN_PROGRESS': Reopening permitted if customer responds that the issue recurred.
+ *    Invalid: Cannot regress to 'OPEN' or 'PENDING_CUSTOMER'.
+ *
+ * 5. 'CLOSED' -> (None - Terminal):
+ *    CLOSED inquiries are final, immutable records preserved for compliance and audit trails.
+ *    Cannot be reopened, transitioned, or modified.
+ */
+const ALLOWED_STATUS_TRANSITIONS = {
+  OPEN: ["IN_PROGRESS"],
+  IN_PROGRESS: ["PENDING_CUSTOMER", "RESOLVED"],
+  PENDING_CUSTOMER: ["IN_PROGRESS", "RESOLVED"],
+  RESOLVED: ["IN_PROGRESS", "CLOSED"],
+  CLOSED: [],
+};
+
+/**
  * Standard Inquiry select object — used across list and detail queries
  * to keep response shapes consistent.
  */
@@ -98,21 +133,54 @@ exports.listInquiries = async (req, res, next) => {
 
     // Build dynamic where clause
     const where = {};
-    if (status) where.status = status;
-    if (priority) where.priority = priority;
-    if (channel) where.channel = channel;
-    if (assignedToId) where.assignedToId = assignedToId;
-    if (categoryId) where.categoryId = categoryId;
+    if (status && status !== "ALL") where.status = status.toUpperCase();
+    if (priority && priority !== "ALL") where.priority = priority.toUpperCase();
+    if (channel && channel !== "ALL") where.channel = channel.toUpperCase();
+    if (categoryId && categoryId !== "ALL") where.categoryId = categoryId;
+
+    const andConditions = [];
+
+    // ── RBAC Access Rule Enforcement ──────────────────────────────────────────
+    // - ADMIN can view, manage, and update all customer inquiries across the system.
+    // - Staff can view all general inquiries (unassigned) or specifically assigned inquiries.
+    const isAdmin = req.user?.role === "ADMIN";
+    if (!isAdmin) {
+      andConditions.push({
+        OR: [
+          { assignedToId: req.user?.id },
+          { assignedToId: null },
+          { createdById: req.user?.id },
+        ],
+      });
+
+      if (assignedToId && assignedToId !== "ALL") {
+        if (assignedToId === "unassigned" || assignedToId === "null") {
+          andConditions.push({ assignedToId: null });
+        } else {
+          andConditions.push({ assignedToId: req.user?.id });
+        }
+      }
+    } else {
+      if (assignedToId && assignedToId !== "ALL") {
+        where.assignedToId = assignedToId;
+      }
+    }
 
     if (search && search.trim()) {
       const term = search.trim();
-      where.OR = [
-        { subject: { contains: term, mode: "insensitive" } },
-        { customerName: { contains: term, mode: "insensitive" } },
-        { customerEmail: { contains: term, mode: "insensitive" } },
-        { ticketNumber: { contains: term, mode: "insensitive" } },
-        { customerCompany: { contains: term, mode: "insensitive" } },
-      ];
+      andConditions.push({
+        OR: [
+          { subject: { contains: term, mode: "insensitive" } },
+          { customerName: { contains: term, mode: "insensitive" } },
+          { customerEmail: { contains: term, mode: "insensitive" } },
+          { ticketNumber: { contains: term, mode: "insensitive" } },
+          { customerCompany: { contains: term, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    if (andConditions.length > 0) {
+      where.AND = andConditions;
     }
 
     const [total, inquiries] = await Promise.all([
@@ -197,6 +265,22 @@ exports.getInquiry = async (req, res, next) => {
       });
     }
 
+    // ── RBAC Access Rule Enforcement ──────────────────────────────────────────
+    // - ADMIN can view all customer inquiries across the system.
+    // - Staff can view general inquiries (unassigned) or specifically assigned inquiries.
+    if (req.user?.role !== "ADMIN") {
+      const isAssigned = Boolean(inquiry.assignedTo && inquiry.assignedTo.id === req.user?.id);
+      const isUnassigned = !inquiry.assignedTo;
+      const isCreator = Boolean(inquiry.createdBy && inquiry.createdBy.id === req.user?.id);
+
+      if (!isAssigned && !isUnassigned && !isCreator) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You are not authorized to view this inquiry. It is assigned to another staff member.",
+        });
+      }
+    }
+
     return res.status(200).json({ data: inquiry });
   } catch (error) {
     next(error);
@@ -248,24 +332,55 @@ exports.createInquiry = async (req, res, next) => {
     }
 
     if (Object.keys(errors).length > 0) {
-      return res.status(400).json({ error: "Validation Error", details: errors });
+      return res.status(400).json({
+        success: false,
+        error: "Validation Error",
+        message: Object.values(errors)[0] || "Invalid inquiry input fields.",
+        details: errors,
+      });
     }
 
     // ── Foreign-key validation ───────────────────────────────────────────────
     if (categoryId) {
       const category = await prisma.category.findUnique({ where: { id: categoryId } });
       if (!category) {
-        return res.status(400).json({ error: "Validation Error", message: "Category not found." });
+        return res.status(400).json({
+          success: false,
+          error: "Validation Error",
+          message: "Category not found.",
+        });
       }
     }
     if (assignedToId) {
       const assignee = await prisma.user.findUnique({ where: { id: assignedToId } });
       if (!assignee || !assignee.isActive) {
         return res.status(400).json({
+          success: false,
           error: "Validation Error",
           message: "Assigned user not found or is inactive.",
         });
       }
+    }
+
+    // ── Duplicate Inquiry Policy (Within last 5 minutes) ───────────────────
+    const fiveMinutesAgo = new Date(Date.now() - 5 * 60 * 1000);
+    const existingDuplicate = await prisma.inquiry.findFirst({
+      where: {
+        customerEmail: customerEmail.trim().toLowerCase(),
+        subject: { equals: subject.trim(), mode: "insensitive" },
+        createdAt: { gte: fiveMinutesAgo },
+      },
+      select: INQUIRY_SELECT,
+    });
+
+    if (existingDuplicate) {
+      return res.status(409).json({
+        success: false,
+        error: "Conflict",
+        message:
+          "A duplicate inquiry with this subject from this customer was already submitted within the last 5 minutes.",
+        data: existingDuplicate,
+      });
     }
 
     const ticketNumber = await generateTicketNumber();
@@ -374,6 +489,33 @@ exports.updateInquiry = async (req, res, next) => {
       });
     }
 
+    // ── RBAC Access Rule Enforcement ──────────────────────────────────────────
+    // 1. ADMIN users can view, manage, and update all customer inquiries across the system.
+    // 2. Staff users can only update inquiries assigned directly to them (or inquiries in 'OPEN' status).
+    // If the user is Staff (and not an ADMIN) and the inquiry is not assigned to them (and not OPEN):
+    // immediately reject the request with a 403 Forbidden status.
+    const isAdmin = req.user?.role === "ADMIN";
+    const isAssigned = Boolean(req.user?.id && existing.assignedToId === req.user.id);
+    const isOpen = existing.status === "OPEN";
+
+    if (!isAdmin) {
+      // If the inquiry is assigned to another staff member, reject immediately with 403 Forbidden
+      if (existing.assignedToId && existing.assignedToId !== req.user?.id) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You are not authorized to update this inquiry. It is assigned to another staff member.",
+        });
+      }
+
+      // If the inquiry is not assigned to the user and is not in 'OPEN' status, reject with 403 Forbidden
+      if (!isAssigned && !isOpen) {
+        return res.status(403).json({
+          error: "Forbidden",
+          message: "You are not authorized to update this inquiry. Staff can only update inquiries assigned directly to them or inquiries in OPEN status.",
+        });
+      }
+    }
+
     const {
       subject,
       description,
@@ -409,20 +551,51 @@ exports.updateInquiry = async (req, res, next) => {
     }
 
     if (Object.keys(errors).length > 0) {
-      return res.status(400).json({ error: "Validation Error", details: errors });
+      return res.status(400).json({
+        success: false,
+        error: "Validation Error",
+        message: Object.values(errors)[0] || "Invalid update fields.",
+        details: errors,
+      });
+    }
+
+    // ── Workflow Rule 1: Closed records are final and immutable ────────────
+    if (existing.status === "CLOSED") {
+      return res.status(400).json({
+        success: false,
+        error: "Bad Request",
+        message: "Inquiry is CLOSED. Closed inquiries are final and cannot be modified or reopened.",
+      });
+    }
+
+    // ── Workflow Rule 2: State transition enforcement ─────────────────────
+    if (status !== undefined && status !== existing.status) {
+      const allowedNext = ALLOWED_STATUS_TRANSITIONS[existing.status] || [];
+      if (!allowedNext.includes(status)) {
+        return res.status(400).json({
+          success: false,
+          error: "Bad Request",
+          message: `Invalid status transition from '${existing.status}' to '${status}'. Allowed transitions: ${allowedNext.length > 0 ? allowedNext.join(", ") : "None (closed records are final)"}.`,
+        });
+      }
     }
 
     // ── Foreign-key validation ───────────────────────────────────────────────
     if (categoryId !== undefined && categoryId !== null) {
       const category = await prisma.category.findUnique({ where: { id: categoryId } });
       if (!category) {
-        return res.status(400).json({ error: "Validation Error", message: "Category not found." });
+        return res.status(400).json({
+          success: false,
+          error: "Validation Error",
+          message: "Category not found.",
+        });
       }
     }
     if (assignedToId !== undefined && assignedToId !== null) {
       const assignee = await prisma.user.findUnique({ where: { id: assignedToId } });
       if (!assignee || !assignee.isActive) {
         return res.status(400).json({
+          success: false,
           error: "Validation Error",
           message: "Assigned user not found or is inactive.",
         });
@@ -525,7 +698,7 @@ exports.deleteInquiry = async (req, res, next) => {
 
     const existing = await prisma.inquiry.findUnique({
       where: { id },
-      select: { id: true, ticketNumber: true, status: true },
+      select: { id: true, ticketNumber: true, status: true, assignedToId: true },
     });
 
     if (!existing) {
@@ -546,6 +719,34 @@ exports.deleteInquiry = async (req, res, next) => {
       await prisma.inquiry.delete({ where: { id } });
       return res.status(200).json({
         message: `Inquiry ${existing.ticketNumber} has been permanently deleted.`,
+      });
+    }
+
+    // RBAC: Staff users can only close inquiries assigned to them or unassigned
+    if (req.user?.role !== "ADMIN") {
+      if (existing.assignedToId && existing.assignedToId !== req.user?.id) {
+        return res.status(403).json({
+          success: false,
+          error: "Forbidden",
+          message: "You are not authorized to close this inquiry. It is assigned to another staff member.",
+        });
+      }
+    }
+
+    // Workflow Rule: Closed inquiries cannot be closed again; must be RESOLVED before CLOSED
+    if (existing.status === "CLOSED") {
+      return res.status(400).json({
+        success: false,
+        error: "Bad Request",
+        message: "Inquiry is already CLOSED. Closed inquiries are final and cannot be modified or reopened.",
+      });
+    }
+
+    if (existing.status !== "RESOLVED") {
+      return res.status(400).json({
+        success: false,
+        error: "Bad Request",
+        message: `Cannot close inquiry with status '${existing.status}'. Inquiries must be in 'RESOLVED' status before they can be closed.`,
       });
     }
 
@@ -586,25 +787,40 @@ exports.addMessage = async (req, res, next) => {
     const { body, isInternalNote = false } = req.body;
 
     if (!body || !body.trim()) {
-      return res.status(400).json({ error: "Validation Error", message: "Message body is required." });
+      return res.status(400).json({
+        success: false,
+        error: "Validation Error",
+        message: "Message body is required.",
+      });
     }
 
     const inquiry = await prisma.inquiry.findUnique({
       where: { id },
-      select: { id: true, status: true },
+      select: { id: true, status: true, assignedToId: true },
     });
 
     if (!inquiry) {
       return res.status(404).json({
+        success: false,
         error: "Not Found",
         message: `Inquiry with id '${id}' does not exist.`,
       });
     }
 
+    // RBAC: Staff cannot add messages or notes to inquiries assigned to another staff member
+    if (req.user?.role !== "ADMIN" && inquiry.assignedToId && inquiry.assignedToId !== req.user?.id) {
+      return res.status(403).json({
+        success: false,
+        error: "Forbidden",
+        message: "You are not authorized to add messages to this inquiry. It is assigned to another staff member.",
+      });
+    }
+
     if (inquiry.status === "CLOSED") {
       return res.status(400).json({
+        success: false,
         error: "Bad Request",
-        message: "Cannot add messages to a closed inquiry.",
+        message: "Inquiry is CLOSED. Cannot add messages or notes to a closed inquiry.",
       });
     }
 

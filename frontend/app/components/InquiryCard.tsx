@@ -3,10 +3,10 @@
 import React from "react";
 import { Inquiry, User } from "../types";
 import {
-  formatRelativeTime,
   getPriorityBadge,
   getStatusBadge,
 } from "../utils";
+import { RelativeTime } from "./RelativeTime";
 import {
   Clock,
   UserCheck,
@@ -193,9 +193,10 @@ export function InquiryCard({
         <span className="truncate text-slate-600">
           {inquiry.lastActivity.text}
         </span>
-        <span className="text-slate-400 ml-auto shrink-0 font-mono text-[11px]">
-          {formatRelativeTime(inquiry.lastActivity.timestamp)}
-        </span>
+        <RelativeTime
+          dateString={inquiry.lastActivity.timestamp}
+          className="text-slate-400 ml-auto shrink-0 font-mono text-[11px]"
+        />
       </div>
     </div>
   );

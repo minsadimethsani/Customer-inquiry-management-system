@@ -13,6 +13,7 @@ exports.login = async (req, res, next) => {
     // Validate input fields
     if (!email || !password) {
       return res.status(400).json({
+        success: false,
         error: "Validation Error",
         message: "Email and password are required.",
       });
@@ -27,6 +28,7 @@ exports.login = async (req, res, next) => {
 
     if (!user) {
       return res.status(401).json({
+        success: false,
         error: "Unauthorized",
         message: "Invalid email or password.",
       });
@@ -35,6 +37,7 @@ exports.login = async (req, res, next) => {
     // Check account active status
     if (user.isActive === false) {
       return res.status(401).json({
+        success: false,
         error: "Unauthorized",
         message: "Account has been deactivated. Please contact an administrator.",
       });
@@ -45,6 +48,7 @@ exports.login = async (req, res, next) => {
 
     if (!storedHash) {
       return res.status(401).json({
+        success: false,
         error: "Unauthorized",
         message: "Authentication failed. No password configured for this user.",
       });
@@ -55,6 +59,7 @@ exports.login = async (req, res, next) => {
 
     if (!isPasswordValid) {
       return res.status(401).json({
+        success: false,
         error: "Unauthorized",
         message: "Invalid email or password.",
       });
@@ -112,6 +117,7 @@ exports.getMe = async (req, res, next) => {
 
     if (!user) {
       return res.status(404).json({
+        success: false,
         error: "Not Found",
         message: "User profile no longer exists.",
       });

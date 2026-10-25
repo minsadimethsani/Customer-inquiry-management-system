@@ -60,6 +60,7 @@ app.get("/api/staff", authenticate, async (req, res, next) => {
 // 404 Route Not Found Handler
 app.use((req, res, next) => {
   res.status(404).json({
+    success: false,
     error: "Not Found",
     message: `Cannot ${req.method} ${req.originalUrl}`,
   });
@@ -73,6 +74,7 @@ app.use((err, req, res, next) => {
   const message = err.message || "Internal Server Error";
 
   res.status(statusCode).json({
+    success: false,
     error: err.name || "ServerError",
     message,
     ...(process.env.NODE_ENV === "development" && { stack: err.stack }),

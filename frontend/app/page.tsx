@@ -17,6 +17,20 @@ import { StatCard } from "./components/StatCard";
 import { InquiryCard } from "./components/InquiryCard";
 import { InquiryDetailModal } from "./components/InquiryDetailModal";
 import { NewInquiryModal } from "./components/NewInquiryModal";
+import { useToast, ToastContainer } from "./components/Toast";
+import {
+  canTransitionStatus,
+  getAllowedTransitions,
+} from "./utils";
+import {
+  fetchInquiriesFromApi,
+  createInquiryApi,
+  updateInquiryStatusApi,
+  updateInquiryPriorityApi,
+  assignInquiryApi,
+  addInquiryMessageApi,
+  ApiMutationResult,
+} from "./api";
 import {
   Inbox,
   AlertTriangle,
@@ -37,6 +51,17 @@ const USER_KEY = "pulsedesk_current_user_v1";
 export default function Home() {
   const [inquiries, setInquiries] = useState<Inquiry[]>(INITIAL_INQUIRIES);
   const [currentUser, setCurrentUser] = useState<User>(STAFF_USERS[0]);
+  const [isLoading, setIsLoading] = useState(true);
+
+  // Toast feedback notifications
+  const {
+    toasts,
+    removeToast,
+    toastSuccess,
+    toastError,
+    toastWarning,
+    toastInfo,
+  } = useToast();
 
   // Filter States
   const [searchQuery, setSearchQuery] = useState("");
@@ -51,7 +76,7 @@ export default function Home() {
   const [selectedInquiry, setSelectedInquiry] = useState<Inquiry | null>(null);
   const [isNewModalOpen, setIsNewModalOpen] = useState(false);
 
-  // Sync with localStorage on client mount
+  // Sync with localStorage & fetch from live API on client mount
   useEffect(() => {
     try {
       const savedInquiries = localStorage.getItem(STORAGE_KEY);
@@ -68,6 +93,20 @@ export default function Home() {
     } catch {
       // fallback to initial
     }
+
+    // Persistently load latest inquiries from PostgreSQL via Node.js API
+    fetchInquiriesFromApi()
+      .then((apiData) => {
+        if (apiData && apiData.length > 0) {
+          setInquiries(apiData);
+        }
+      })
+      .catch(() => {
+        // Fall back gracefully to local storage
+      })
+      .finally(() => {
+        setIsLoading(false);
+      });
   }, []);
 
   // Save to localStorage whenever inquiries change
@@ -87,21 +126,36 @@ export default function Home() {
     } catch (e) {
       console.error("User storage error:", e);
     }
+    toastInfo("Active User Changed", `Switched active operator to ${user.name} (${user.role})`);
   };
 
   const handleResetData = () => {
     if (confirm("Reset all inquiries to sample demonstration data?")) {
       saveInquiries(INITIAL_INQUIRIES);
       setSelectedInquiry(null);
+      toastInfo("Reset Complete", "Inquiries reset to baseline demonstration dataset.");
     }
   };
 
   // Quick 1-Click Handlers for Core Problem Solving
-  const handleQuickAssign = (inquiryId: string, user: User) => {
+  const handleQuickAssign = async (inquiryId: string, user: User) => {
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      toastError("Action Prohibited", "Closed records are archived and cannot be reassigned.");
+      return;
+    }
+
+    // Persist to PostgreSQL via Node.js API
+    const res = await assignInquiryApi(inquiryId, user.id, currentUser.email);
+    if (res && res.success === false) {
+      toastError("Assignment Failed", res.message || "Failed to assign inquiry on server.");
+      return;
+    }
+
     const now = new Date().toISOString();
+    const isSelf = user.id === currentUser.id;
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
-        const isSelf = user.id === currentUser.id;
         const newLog = {
           id: `log-${Date.now()}`,
           inquiryId,
@@ -134,9 +188,47 @@ export default function Home() {
       return inq;
     });
     saveInquiries(updated);
+    toastSuccess(
+      "Inquiry Assigned",
+      isSelf
+        ? `Ticket #${targetInq?.ticketNumber || inquiryId} assigned to yourself.`
+        : `Ticket #${targetInq?.ticketNumber || inquiryId} assigned to ${user.name}.`
+    );
   };
 
-  const handleUpdateStatus = (inquiryId: string, newStatus: InquiryStatus) => {
+  const handleUpdateStatus = async (
+    inquiryId: string,
+    newStatus: InquiryStatus
+  ): Promise<ApiMutationResult> => {
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (!targetInq) {
+      const err = "Inquiry record not found.";
+      toastError("Error", err);
+      return { success: false, message: err };
+    }
+
+    // Enforce workflow rules: Closed records are immutable
+    if (targetInq.status === "CLOSED") {
+      const err = "Inquiry is CLOSED. Closed records are final and cannot be modified or reopened.";
+      toastError("Workflow Violation", err);
+      return { success: false, message: err };
+    }
+
+    // Enforce workflow rules: Valid transitions only
+    if (!canTransitionStatus(targetInq.status, newStatus)) {
+      const allowed = getAllowedTransitions(targetInq.status).join(", ") || "None";
+      const err = `Cannot transition status from '${targetInq.status}' to '${newStatus}'. Allowed transitions: ${allowed}`;
+      toastError("Invalid Status Transition", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to PostgreSQL via Node.js API
+    const res = await updateInquiryStatusApi(inquiryId, newStatus, currentUser.email);
+    if (res && res.success === false) {
+      toastError("Status Update Failed", res.message || "Failed to update inquiry status on server.");
+      return res;
+    }
+
     const now = new Date().toISOString();
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
@@ -167,9 +259,31 @@ export default function Home() {
       return inq;
     });
     saveInquiries(updated);
+    toastSuccess(
+      "Status Updated",
+      `Ticket #${targetInq.ticketNumber} transitioned to ${newStatus}.`
+    );
+    return { success: true, message: `Status updated to ${newStatus}` };
   };
 
-  const handleUpdatePriority = (inquiryId: string, newPriority: Priority) => {
+  const handleUpdatePriority = async (
+    inquiryId: string,
+    newPriority: Priority
+  ): Promise<ApiMutationResult> => {
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      const err = "Inquiry is CLOSED. Closed records cannot be modified.";
+      toastError("Workflow Violation", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to PostgreSQL via Node.js API
+    const res = await updateInquiryPriorityApi(inquiryId, newPriority, currentUser.email);
+    if (res && res.success === false) {
+      toastError("Priority Update Failed", res.message || "Server rejected priority change.");
+      return res;
+    }
+
     const now = new Date().toISOString();
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
@@ -200,9 +314,31 @@ export default function Home() {
       return inq;
     });
     saveInquiries(updated);
+    toastSuccess(
+      "Priority Updated",
+      `Ticket #${targetInq?.ticketNumber || inquiryId} priority set to ${newPriority}.`
+    );
+    return { success: true, message: `Priority set to ${newPriority}` };
   };
 
-  const handleAssign = (inquiryId: string, assignedTo: User | null) => {
+  const handleAssign = async (
+    inquiryId: string,
+    assignedTo: User | null
+  ): Promise<ApiMutationResult> => {
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      const err = "Inquiry is CLOSED. Closed records cannot be modified.";
+      toastError("Workflow Violation", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to PostgreSQL via Node.js API
+    const res = await assignInquiryApi(inquiryId, assignedTo?.id || null, currentUser.email);
+    if (res && res.success === false) {
+      toastError("Assignment Failed", res.message || "Server rejected assignment.");
+      return res;
+    }
+
     const now = new Date().toISOString();
     const updated = inquiries.map((inq) => {
       if (inq.id === inquiryId) {
@@ -237,13 +373,39 @@ export default function Home() {
       return inq;
     });
     saveInquiries(updated);
+    toastSuccess(
+      "Assignment Updated",
+      assignedTo
+        ? `Assigned to ${assignedTo.name}`
+        : "Inquiry unassigned and returned to queue."
+    );
+    return { success: true };
   };
 
-  const handleAddMessage = (
+  const handleAddMessage = async (
     inquiryId: string,
     body: string,
     isInternalNote: boolean
-  ) => {
+  ): Promise<ApiMutationResult> => {
+    const targetInq = inquiries.find((i) => i.id === inquiryId);
+    if (targetInq?.status === "CLOSED") {
+      const err = "Inquiry is CLOSED. Discussion is locked.";
+      toastError("Action Prohibited", err);
+      return { success: false, message: err };
+    }
+
+    // Persist to PostgreSQL via Node.js API
+    const res = await addInquiryMessageApi(
+      inquiryId,
+      body,
+      isInternalNote,
+      currentUser.email
+    );
+    if (res && res.success === false) {
+      toastError("Message Dispatch Failed", res.message || "Failed to record message.");
+      return res;
+    }
+
     const now = new Date().toISOString();
     const newMessage = {
       id: `msg-${Date.now()}`,
@@ -294,13 +456,85 @@ export default function Home() {
       return inq;
     });
     saveInquiries(updated);
+    toastSuccess(
+      isInternalNote ? "Staff Note Saved" : "Response Sent",
+      isInternalNote
+        ? "Internal note logged in ticket audit history."
+        : "Reply dispatched to customer."
+    );
+    return { success: true };
   };
 
-  const handleCreateInquiry = (newInquiry: Inquiry) => {
-    const updated = [newInquiry, ...inquiries];
+  const handleCreateInquiry = async (
+    newInquiry: Inquiry
+  ): Promise<ApiMutationResult<Inquiry>> => {
+    // 5-minute duplicate submission check
+    const fiveMinutesAgo = Date.now() - 5 * 60 * 1000;
+    const localDuplicate = inquiries.find(
+      (i) =>
+        i.customer.email.toLowerCase() ===
+          newInquiry.customer.email.toLowerCase() &&
+        i.subject.trim().toLowerCase() ===
+          newInquiry.subject.trim().toLowerCase() &&
+        new Date(i.createdAt).getTime() >= fiveMinutesAgo
+    );
+
+    if (localDuplicate) {
+      const msg = `Duplicate Inquiry: An identical inquiry from '${newInquiry.customer.email}' with subject '${newInquiry.subject}' was submitted within the last 5 minutes.`;
+      toastWarning("Duplicate Submission Prevented", msg);
+      return {
+        success: false,
+        status: 409,
+        error: "DuplicateInquiry",
+        message: msg,
+      };
+    }
+
+    // Persist to PostgreSQL via Node.js API
+    const res = await createInquiryApi(
+      {
+        subject: newInquiry.subject,
+        description: newInquiry.description,
+        customerName: newInquiry.customer.name,
+        customerEmail: newInquiry.customer.email,
+        customerPhone: newInquiry.customer.phone,
+        customerCompany: newInquiry.customer.company,
+        priority: newInquiry.priority,
+        channel: newInquiry.channel,
+        categoryId: newInquiry.category?.id,
+        assignedToId: newInquiry.assignedTo?.id,
+      },
+      currentUser.email
+    );
+
+    if (res && res.success === false) {
+      if (
+        res.status === 409 ||
+        res.error === "DuplicateInquiry" ||
+        res.error === "Conflict"
+      ) {
+        toastWarning(
+          "Duplicate Submission Detected",
+          res.message || "An inquiry with this subject was submitted within the last 5 minutes."
+        );
+      } else {
+        toastError(
+          "Submission Failed",
+          res.message || "Failed to create inquiry. Please check the required fields."
+        );
+      }
+      return res;
+    }
+
+    const createdRecord = (res && res.data) ? res.data : newInquiry;
+    const updated = [createdRecord, ...inquiries.filter((i) => i.id !== createdRecord.id)];
     saveInquiries(updated);
-    setIsNewModalOpen(false);
-    setSelectedInquiry(newInquiry);
+    setSelectedInquiry(createdRecord);
+    toastSuccess(
+      "Inquiry Created Successfully",
+      `Ticket #${createdRecord.ticketNumber} opened for ${createdRecord.customer.name}.`
+    );
+    return { success: true, data: createdRecord };
   };
 
   // Computed Metrics
@@ -372,7 +606,20 @@ export default function Home() {
     currentUser.id,
   ]);
 
+  const hasActiveFilters =
+    searchQuery !== "" ||
+    activeTab !== "ALL" ||
+    selectedPriority !== "ALL" ||
+    selectedCategory !== "ALL" ||
+    selectedChannel !== "ALL";
 
+  const clearAllFilters = () => {
+    setSearchQuery("");
+    setActiveTab("ALL");
+    setSelectedPriority("ALL");
+    setSelectedCategory("ALL");
+    setSelectedChannel("ALL");
+  };
 
   return (
     <div className="min-h-screen bg-slate-50 flex flex-col">
@@ -405,7 +652,7 @@ export default function Home() {
           <div className="absolute -right-20 -bottom-20 w-80 h-80 bg-blue-500/20 rounded-full blur-3xl pointer-events-none" />
         </div>
 
-        {/* Problem 1 & 2: Real-Time Stats Overview Ribbon */}
+        {/* Real-Time Stats Overview Ribbon */}
         <section aria-label="Inquiry Metrics Overview" className="grid grid-cols-2 lg:grid-cols-5 gap-4">
           <StatCard
             label="Total Inquiries"
@@ -428,39 +675,44 @@ export default function Home() {
           <StatCard
             label="In Progress"
             value={metrics.inProgress}
-            subtext="Being worked on"
+            subtext="Under active review"
             icon={Clock}
             variant="info"
             isActive={activeTab === "IN_PROGRESS"}
             onClick={() => setActiveTab("IN_PROGRESS")}
           />
           <StatCard
-            label="Urgent Priority"
-            value={metrics.urgent}
-            subtext="Needs quick resolution"
-            icon={AlertTriangle}
-            variant="warning"
-          />
-          <StatCard
-            label="Resolved / Done"
+            label="Resolved"
             value={metrics.resolved}
-            subtext="Closed tickets"
+            subtext="Completed tickets"
             icon={CheckCircle2}
             variant="success"
             isActive={activeTab === "RESOLVED"}
             onClick={() => setActiveTab("RESOLVED")}
           />
+          <StatCard
+            label="Urgent Priority"
+            value={metrics.urgent}
+            subtext={metrics.urgent > 0 ? "🔥 Requires attention" : "No urgent issues"}
+            icon={AlertTriangle}
+            variant={metrics.urgent > 0 ? "danger" : "default"}
+            isActive={selectedPriority === "URGENT"}
+            onClick={() =>
+              setSelectedPriority(selectedPriority === "URGENT" ? "ALL" : "URGENT")
+            }
+          />
         </section>
 
-        {/* Search, Tabs, and Filter Controls Section */}
-        <section aria-label="Filters and Inquiries" className="space-y-4">
-          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-4 rounded-xl border border-slate-200 shadow-2xs">
-            {/* Primary Tab Navigation */}
-            <div className="flex flex-wrap items-center gap-1.5 bg-slate-100/90 p-1 rounded-xl">
+        {/* Core Workspace: Filters, Search & Triage List */}
+        <section aria-label="Customer Inquiry Queue" className="space-y-4">
+          {/* Filtering Ribbon */}
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-4 rounded-2xl border border-slate-200 shadow-xs">
+            {/* Quick Status Tabs */}
+            <div className="flex items-center gap-1 p-1 bg-slate-100 rounded-xl overflow-x-auto">
               <button
                 type="button"
                 onClick={() => setActiveTab("ALL")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   activeTab === "ALL"
                     ? "bg-white text-slate-900 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
@@ -471,31 +723,29 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => setActiveTab("UNASSIGNED")}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   activeTab === "UNASSIGNED"
-                    ? "bg-red-600 text-white shadow-xs"
-                    : "text-red-700 hover:bg-red-50"
+                    ? "bg-red-50 text-red-700 shadow-xs font-bold"
+                    : "text-slate-600 hover:text-slate-900"
                 }`}
               >
-                <AlertTriangle className="w-3.5 h-3.5" />
                 Needs Owner ({metrics.unassigned})
               </button>
               <button
                 type="button"
                 onClick={() => setActiveTab("ASSIGNED_TO_ME")}
-                className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   activeTab === "ASSIGNED_TO_ME"
-                    ? "bg-blue-600 text-white shadow-xs"
+                    ? "bg-white text-blue-700 shadow-xs font-bold"
                     : "text-slate-600 hover:text-slate-900"
                 }`}
               >
-                <UserCheck className="w-3.5 h-3.5" />
                 Assigned to Me
               </button>
               <button
                 type="button"
                 onClick={() => setActiveTab("IN_PROGRESS")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   activeTab === "IN_PROGRESS"
                     ? "bg-white text-slate-900 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
@@ -506,7 +756,7 @@ export default function Home() {
               <button
                 type="button"
                 onClick={() => setActiveTab("RESOLVED")}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all ${
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-all cursor-pointer ${
                   activeTab === "RESOLVED"
                     ? "bg-white text-slate-900 shadow-xs"
                     : "text-slate-600 hover:text-slate-900"
@@ -524,13 +774,13 @@ export default function Home() {
                 placeholder="Search ticket #, customer, company, subject..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full pl-9 pr-4 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 transition-all"
+                className="w-full pl-9 pr-8 py-2 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-800 placeholder-slate-400 focus:outline-hidden focus:ring-2 focus:ring-blue-500 transition-all"
               />
               {searchQuery && (
                 <button
                   type="button"
                   onClick={() => setSearchQuery("")}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-slate-600 text-xs font-bold p-1 cursor-pointer"
                 >
                   ✕
                 </button>
@@ -585,21 +835,13 @@ export default function Home() {
               <option value="WEB_PORTAL">🌐 Web Portal</option>
             </select>
 
-            {(selectedPriority !== "ALL" ||
-              selectedCategory !== "ALL" ||
-              selectedChannel !== "ALL" ||
-              searchQuery !== "") && (
+            {hasActiveFilters && (
               <button
                 type="button"
-                onClick={() => {
-                  setSelectedPriority("ALL");
-                  setSelectedCategory("ALL");
-                  setSelectedChannel("ALL");
-                  setSearchQuery("");
-                }}
-                className="text-blue-600 hover:underline font-semibold ml-auto"
+                onClick={clearAllFilters}
+                className="text-rose-600 hover:text-rose-700 font-semibold ml-auto text-xs cursor-pointer flex items-center gap-1"
               >
-                Clear all filters
+                <span>Clear all filters</span>
               </button>
             )}
           </div>
@@ -609,31 +851,68 @@ export default function Home() {
             <div className="flex items-center justify-between text-xs text-slate-500 px-1">
               <span>
                 Showing <strong>{filteredInquiries.length}</strong> inquiries
+                {hasActiveFilters && " (Filtered)"}
               </span>
               <span className="text-[11px] text-slate-400">
                 Click any inquiry to view conversation, private staff notes, and audit timeline
               </span>
             </div>
 
-            {filteredInquiries.length === 0 ? (
+            {/* Usability Loading Skeletons */}
+            {isLoading ? (
+              <div className="grid grid-cols-1 gap-3.5">
+                {[1, 2, 3, 4].map((n) => (
+                  <div
+                    key={n}
+                    className="p-5 bg-white rounded-2xl border border-slate-200/80 shadow-xs animate-pulse space-y-3"
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="h-5 w-24 bg-slate-200 rounded-md" />
+                      <div className="h-5 w-20 bg-slate-200 rounded-full" />
+                    </div>
+                    <div className="h-4 w-3/4 bg-slate-200 rounded" />
+                    <div className="h-3 w-1/2 bg-slate-100 rounded" />
+                    <div className="flex items-center gap-4 pt-2 border-t border-slate-100">
+                      <div className="h-4 w-28 bg-slate-100 rounded" />
+                      <div className="h-4 w-28 bg-slate-100 rounded" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : filteredInquiries.length === 0 ? (
               <div className="flex flex-col items-center justify-center p-12 bg-white rounded-2xl border border-dashed border-slate-300 text-center space-y-3">
                 <div className="w-12 h-12 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
                   <Inbox className="w-6 h-6" />
                 </div>
                 <h3 className="text-base font-bold text-slate-800">
-                  No inquiries found
+                  {hasActiveFilters
+                    ? "No inquiries found matching your filters"
+                    : "No customer inquiries yet"}
                 </h3>
                 <p className="text-xs text-slate-500 max-w-sm">
-                  No inquiries match the current search filters. Try clearing your filters or create a new inquiry.
+                  {hasActiveFilters
+                    ? "No inquiries match the current search or tab criteria. Reset your filters to see all tickets."
+                    : "Get started by recording your first customer inquiry received via phone, email, or chat."}
                 </p>
-                <button
-                  type="button"
-                  onClick={() => setIsNewModalOpen(true)}
-                  className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-2xs"
-                >
-                  <PlusCircle className="w-4 h-4" />
-                  Log New Inquiry
-                </button>
+                <div className="flex items-center gap-3 pt-1">
+                  {hasActiveFilters && (
+                    <button
+                      type="button"
+                      onClick={clearAllFilters}
+                      className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 rounded-lg transition-colors cursor-pointer"
+                    >
+                      Clear Filters
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => setIsNewModalOpen(true)}
+                    className="inline-flex items-center gap-1.5 px-3.5 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition-colors shadow-2xs cursor-pointer"
+                  >
+                    <PlusCircle className="w-4 h-4" />
+                    Log New Inquiry
+                  </button>
+                </div>
               </div>
             ) : (
               <div className="grid grid-cols-1 gap-3.5">
@@ -677,6 +956,9 @@ export default function Home() {
           onCreate={handleCreateInquiry}
         />
       )}
+
+      {/* Toast Feedback Notifications */}
+      <ToastContainer toasts={toasts} onDismiss={removeToast} />
     </div>
   );
 }

@@ -11,6 +11,7 @@ function authenticate(req, res, next) {
   // Check for presence of Authorization header
   if (!authHeader) {
     return res.status(401).json({
+      success: false,
       error: "Unauthorized",
       message: "Access denied. No authorization header provided.",
     });
@@ -20,6 +21,7 @@ function authenticate(req, res, next) {
   const parts = authHeader.split(" ");
   if (parts.length !== 2 || parts[0] !== "Bearer") {
     return res.status(401).json({
+      success: false,
       error: "Unauthorized",
       message: "Invalid authorization header format. Expected 'Bearer <token>'.",
     });
@@ -38,12 +40,14 @@ function authenticate(req, res, next) {
   } catch (error) {
     if (error.name === "TokenExpiredError") {
       return res.status(401).json({
+        success: false,
         error: "Unauthorized",
         message: "Authentication token has expired. Please log in again.",
       });
     }
 
     return res.status(401).json({
+      success: false,
       error: "Unauthorized",
       message: "Invalid or malformed authentication token.",
     });
@@ -58,6 +62,7 @@ function authorizeRoles(...allowedRoles) {
   return (req, res, next) => {
     if (!req.user || !allowedRoles.includes(req.user.role)) {
       return res.status(403).json({
+        success: false,
         error: "Forbidden",
         message: "You do not have permission to perform this action.",
       });

@@ -2,14 +2,14 @@
 
 import React, { useState } from "react";
 import { Category, Inquiry, InquiryChannel, Priority, User } from "../types";
-import { X, Plus, AlertCircle } from "lucide-react";
+import { X, Plus, AlertCircle, AlertTriangle, RefreshCw, CheckCircle2 } from "lucide-react";
 
 interface NewInquiryModalProps {
   categories: Category[];
   staffUsers: User[];
   currentUser: User;
   onClose: () => void;
-  onCreate: (newInquiry: Inquiry) => void;
+  onCreate: (newInquiry: Inquiry) => Promise<any> | void;
 }
 
 export function NewInquiryModal({
@@ -30,9 +30,36 @@ export function NewInquiryModal({
   const [priority, setPriority] = useState<Priority>("MEDIUM");
   const [assignedToId, setAssignedToId] = useState("");
 
-  const handleSubmit = (e: React.FormEvent) => {
+  // Usability & Error States
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submissionError, setSubmissionError] = useState<string | null>(null);
+  const [isDuplicate, setIsDuplicate] = useState(false);
+
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!subject.trim() || !customerName.trim() || !customerEmail.trim()) {
+    setSubmissionError(null);
+    setIsDuplicate(false);
+
+    // Client-side required field validation
+    if (!customerName.trim()) {
+      setSubmissionError("Customer name is required.");
+      return;
+    }
+    if (!customerEmail.trim()) {
+      setSubmissionError("Customer email is required.");
+      return;
+    }
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(customerEmail.trim())) {
+      setSubmissionError("Please provide a valid customer email address.");
+      return;
+    }
+    if (!subject.trim()) {
+      setSubmissionError("Subject / issue summary is required.");
+      return;
+    }
+    if (!description.trim()) {
+      setSubmissionError("Inquiry details / message description is required.");
       return;
     }
 
@@ -105,7 +132,32 @@ export function NewInquiryModal({
       ],
     };
 
-    onCreate(createdInquiry);
+    setIsSubmitting(true);
+    try {
+      const result = await onCreate(createdInquiry);
+      if (result && result.success === false) {
+        setIsSubmitting(false);
+        const isConflict =
+          result.status === 409 ||
+          result.error === "DuplicateInquiry" ||
+          result.error === "Conflict";
+        setIsDuplicate(isConflict);
+        setSubmissionError(
+          result.message ||
+            (isConflict
+              ? "Duplicate inquiry: An identical inquiry from this email with the same subject was recently submitted. Please check existing tickets."
+              : "Failed to save inquiry. Please check your inputs and try again.")
+        );
+        return;
+      }
+      setIsSubmitting(false);
+      onClose();
+    } catch (err: any) {
+      setIsSubmitting(false);
+      setSubmissionError(
+        err.message || "An unexpected error occurred while saving the inquiry."
+      );
+    }
   };
 
   return (
@@ -123,14 +175,50 @@ export function NewInquiryModal({
           </div>
           <button
             onClick={onClose}
-            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-lg transition-colors"
+            disabled={isSubmitting}
+            className="p-1.5 text-slate-400 hover:text-slate-700 hover:bg-slate-200/60 rounded-lg transition-colors disabled:opacity-50"
           >
             <X className="w-5 h-5" />
           </button>
         </div>
 
+        {/* Validation / Error Banner */}
+        {submissionError && (
+          <div
+            className={`mx-6 mt-4 p-3.5 rounded-xl border flex items-start gap-3 ${
+              isDuplicate
+                ? "bg-amber-50 border-amber-300 text-amber-900"
+                : "bg-rose-50 border-rose-300 text-rose-900"
+            }`}
+          >
+            {isDuplicate ? (
+              <AlertTriangle className="w-5 h-5 text-amber-600 shrink-0 mt-0.5" />
+            ) : (
+              <AlertCircle className="w-5 h-5 text-rose-600 shrink-0 mt-0.5" />
+            )}
+            <div className="flex-1 text-xs">
+              <span className="font-bold block mb-0.5">
+                {isDuplicate ? "Duplicate Inquiry Detected" : "Submission Failed"}
+              </span>
+              <p className="leading-relaxed">{submissionError}</p>
+              {isDuplicate && (
+                <p className="mt-1 text-[11px] text-amber-700 font-medium">
+                  Tip: Inquiries submitted within 5 minutes with identical subjects are deduplicated to protect against double-submission.
+                </p>
+              )}
+            </div>
+            <button
+              type="button"
+              onClick={() => setSubmissionError(null)}
+              className="text-slate-400 hover:text-slate-600 text-xs font-bold px-1"
+            >
+              ✕
+            </button>
+          </div>
+        )}
+
         {/* Form */}
-        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[80vh] overflow-y-auto">
+        <form onSubmit={handleSubmit} className="p-6 space-y-4 max-h-[75vh] overflow-y-auto">
           {/* Customer Details Section */}
           <div className="space-y-3">
             <h3 className="text-xs font-bold uppercase tracking-wider text-slate-400">
@@ -144,10 +232,11 @@ export function NewInquiryModal({
                 <input
                   type="text"
                   required
+                  disabled={isSubmitting}
                   placeholder="e.g. Alice Cooper"
                   value={customerName}
                   onChange={(e) => setCustomerName(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 />
               </div>
               <div>
@@ -157,10 +246,11 @@ export function NewInquiryModal({
                 <input
                   type="email"
                   required
+                  disabled={isSubmitting}
                   placeholder="alice@company.com"
                   value={customerEmail}
                   onChange={(e) => setCustomerEmail(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 />
               </div>
               <div>
@@ -169,10 +259,11 @@ export function NewInquiryModal({
                 </label>
                 <input
                   type="tel"
+                  disabled={isSubmitting}
                   placeholder="+1 (555) 000-0000"
                   value={customerPhone}
                   onChange={(e) => setCustomerPhone(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 />
               </div>
               <div>
@@ -181,10 +272,11 @@ export function NewInquiryModal({
                 </label>
                 <input
                   type="text"
+                  disabled={isSubmitting}
                   placeholder="e.g. ACME Corp"
                   value={customerCompany}
                   onChange={(e) => setCustomerCompany(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 />
               </div>
             </div>
@@ -202,8 +294,9 @@ export function NewInquiryModal({
                 </label>
                 <select
                   value={channel}
+                  disabled={isSubmitting}
                   onChange={(e) => setChannel(e.target.value as InquiryChannel)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 >
                   <option value="PHONE">📞 Phone Call</option>
                   <option value="CHAT">💬 Live Chat</option>
@@ -218,8 +311,9 @@ export function NewInquiryModal({
                 </label>
                 <select
                   value={categoryId}
+                  disabled={isSubmitting}
                   onChange={(e) => setCategoryId(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 >
                   {categories.map((c) => (
                     <option key={c.id} value={c.id}>
@@ -235,8 +329,9 @@ export function NewInquiryModal({
                 </label>
                 <select
                   value={priority}
+                  disabled={isSubmitting}
                   onChange={(e) => setPriority(e.target.value as Priority)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 >
                   <option value="LOW">Low</option>
                   <option value="MEDIUM">Medium</option>
@@ -251,8 +346,9 @@ export function NewInquiryModal({
                 </label>
                 <select
                   value={assignedToId}
+                  disabled={isSubmitting}
                   onChange={(e) => setAssignedToId(e.target.value)}
-                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                  className="w-full text-xs p-2.5 rounded-lg border border-slate-300 bg-white focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
                 >
                   <option value="">⚠️ Leave Unassigned</option>
                   {staffUsers.map((u) => (
@@ -274,10 +370,11 @@ export function NewInquiryModal({
               <input
                 type="text"
                 required
+                disabled={isSubmitting}
                 placeholder="e.g. Broken water heater line in master restroom"
                 value={subject}
                 onChange={(e) => setSubject(e.target.value)}
-                className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500"
+                className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100"
               />
             </div>
 
@@ -288,10 +385,11 @@ export function NewInquiryModal({
               <textarea
                 rows={4}
                 required
+                disabled={isSubmitting}
                 placeholder="Detailed description of customer's request, address, or initial conversation notes..."
                 value={description}
                 onChange={(e) => setDescription(e.target.value)}
-                className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 resize-none"
+                className="w-full text-xs p-2.5 rounded-lg border border-slate-300 focus:outline-hidden focus:ring-2 focus:ring-blue-500 resize-none disabled:bg-slate-100"
               />
             </div>
           </div>
@@ -301,16 +399,27 @@ export function NewInquiryModal({
             <button
               type="button"
               onClick={onClose}
-              className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors"
+              disabled={isSubmitting}
+              className="px-4 py-2 text-xs font-semibold text-slate-600 hover:bg-slate-100 rounded-lg transition-colors disabled:opacity-50"
             >
               Cancel
             </button>
             <button
               type="submit"
-              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 rounded-lg shadow-sm transition-colors"
+              disabled={isSubmitting}
+              className="inline-flex items-center gap-1.5 px-4 py-2 text-xs font-semibold text-white bg-blue-600 hover:bg-blue-700 disabled:bg-blue-400 rounded-lg shadow-sm transition-colors cursor-pointer"
             >
-              <Plus className="w-4 h-4" />
-              Create & Log Inquiry
+              {isSubmitting ? (
+                <>
+                  <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                  <span>Submitting...</span>
+                </>
+              ) : (
+                <>
+                  <Plus className="w-4 h-4" />
+                  <span>Create & Log Inquiry</span>
+                </>
+              )}
             </button>
           </div>
         </form>

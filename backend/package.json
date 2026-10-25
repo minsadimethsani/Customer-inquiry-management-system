@@ -6,6 +6,10 @@
   "scripts": {
     "start": "node src/index.js",
     "dev": "node --watch src/index.js",
+    "test": "node test_auth.js && node test_rbac.js && node test_workflow.js",
+    "test:auth": "node test_auth.js",
+    "test:rbac": "node test_rbac.js",
+    "test:workflow": "node test_workflow.js",
     "build": "tsc",
     "seed": "tsx prisma/seed.ts",
     "prisma:generate": "prisma generate",

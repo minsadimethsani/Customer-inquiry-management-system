@@ -33,6 +33,7 @@ router.post("/", createInquiry);
  */
 router.get("/:id", getInquiry);
 router.patch("/:id", updateInquiry);
+router.put("/:id", updateInquiry);
 router.delete("/:id", deleteInquiry);
 
 // ─── Nested: Messages / Internal Notes ───────────────────────────────────────

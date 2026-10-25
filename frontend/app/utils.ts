@@ -1,6 +1,32 @@
+import { InquiryStatus } from "./types";
+
+/**
+ * Strict workflow state machine rules:
+ * - OPEN -> IN_PROGRESS
+ * - IN_PROGRESS -> PENDING_CUSTOMER or RESOLVED
+ * - PENDING_CUSTOMER -> IN_PROGRESS or RESOLVED
+ * - RESOLVED -> CLOSED (final) or IN_PROGRESS (reopened)
+ * - CLOSED -> [] (immutable final archive)
+ */
+export const ALLOWED_STATUS_TRANSITIONS: Record<InquiryStatus, InquiryStatus[]> = {
+  OPEN: ["IN_PROGRESS"],
+  IN_PROGRESS: ["PENDING_CUSTOMER", "RESOLVED"],
+  PENDING_CUSTOMER: ["IN_PROGRESS", "RESOLVED"],
+  RESOLVED: ["IN_PROGRESS", "CLOSED"],
+  CLOSED: [],
+};
+
+export function canTransitionStatus(from: InquiryStatus, to: InquiryStatus): boolean {
+  if (from === to) return true;
+  return (ALLOWED_STATUS_TRANSITIONS[from] || []).includes(to);
+}
+
+export function getAllowedTransitions(status: InquiryStatus): InquiryStatus[] {
+  return ALLOWED_STATUS_TRANSITIONS[status] || [];
+}
+
 export function formatRelativeTime(dateString: string): string {
   try {
-    if (typeof window === "undefined") return "Recent";
     const date = new Date(dateString);
     const now = new Date();
     const diffInSeconds = Math.floor((now.getTime() - date.getTime()) / 1000);
